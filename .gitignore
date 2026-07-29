@@ -1,0 +1,7 @@
+.env
+data/
+node_modules/
+.DS_Store
+
+# 도구가 만드는 상태 파일
+.omc/

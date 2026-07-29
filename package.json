@@ -1,0 +1,18 @@
+{
+  "name": "retro-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "텔레그램에 흘려보낸 조각글을 노션 일간 회고로 정리해주는 에이전트",
+  "engines": {
+    "node": ">=20.6.0"
+  },
+  "scripts": {
+    "start": "node --env-file=.env src/index.js",
+    "test": "node --test \"test/*.test.js\"",
+    "dry-run": "node --env-file=.env scripts/dry-run.js",
+    "whoami": "node --env-file=.env scripts/whoami.js",
+    "install-agent": "bash scripts/install-launchd.sh",
+    "uninstall-agent": "bash scripts/uninstall-launchd.sh"
+  }
+}
