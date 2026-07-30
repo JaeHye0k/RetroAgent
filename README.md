@@ -21,6 +21,8 @@
 
 외부 의존성은 없다. Node 내장 `fetch`, `--env-file`, `node:test` 만 쓴다.
 
+> 구조도와 데이터 흐름 다이어그램은 [`docs/architecture.html`](docs/architecture.html) 에 있다. 브라우저로 열면 된다.
+
 ## 셋업
 
 ### 1. 텔레그램 봇 만들기

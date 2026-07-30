@@ -1,0 +1,918 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>회고 에이전트 — 동작 구조</title>
+<style>
+  :root {
+    --bg: #fbfbfa;
+    --surface: #ffffff;
+    --surface-2: #f4f4f2;
+    --text: #1f1f1d;
+    --muted: #6b6b66;
+    --line: #e2e2dd;
+    --line-strong: #c9c9c2;
+    --tg: #2b8fd0;
+    --tg-bg: #e8f3fb;
+    --claude: #c2643f;
+    --claude-bg: #fbeee8;
+    --notion: #4a4a46;
+    --notion-bg: #eeeeec;
+    --local: #2f8a5f;
+    --local-bg: #e7f4ed;
+    --warn: #a8621a;
+    --warn-bg: #fcf1e3;
+    --code-bg: #f4f4f2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #191918;
+      --surface: #222221;
+      --surface-2: #2a2a28;
+      --text: #ececea;
+      --muted: #a0a09a;
+      --line: #35352f;
+      --line-strong: #4a4a44;
+      --tg: #6ab8e8;
+      --tg-bg: #1b2c38;
+      --claude: #e0916d;
+      --claude-bg: #33241d;
+      --notion: #c4c4bf;
+      --notion-bg: #2e2e2c;
+      --local: #6cc394;
+      --local-bg: #1c2f26;
+      --warn: #e0a662;
+      --warn-bg: #322616;
+      --code-bg: #2a2a28;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #191918; --surface: #222221; --surface-2: #2a2a28; --text: #ececea;
+    --muted: #a0a09a; --line: #35352f; --line-strong: #4a4a44;
+    --tg: #6ab8e8; --tg-bg: #1b2c38; --claude: #e0916d; --claude-bg: #33241d;
+    --notion: #c4c4bf; --notion-bg: #2e2e2c; --local: #6cc394; --local-bg: #1c2f26;
+    --warn: #e0a662; --warn-bg: #322616; --code-bg: #2a2a28;
+  }
+  :root[data-theme="light"] {
+    --bg: #fbfbfa; --surface: #ffffff; --surface-2: #f4f4f2; --text: #1f1f1d;
+    --muted: #6b6b66; --line: #e2e2dd; --line-strong: #c9c9c2;
+    --tg: #2b8fd0; --tg-bg: #e8f3fb; --claude: #c2643f; --claude-bg: #fbeee8;
+    --notion: #4a4a46; --notion-bg: #eeeeec; --local: #2f8a5f; --local-bg: #e7f4ed;
+    --warn: #a8621a; --warn-bg: #fcf1e3; --code-bg: #f4f4f2;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+    line-height: 1.75;
+    font-size: 16px;
+    letter-spacing: -0.003em;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 56px 24px 120px; }
+
+  header { border-bottom: 1px solid var(--line); padding-bottom: 32px; margin-bottom: 8px; }
+  h1 { font-size: 2rem; line-height: 1.3; margin: 0 0 12px; letter-spacing: -0.02em; }
+  .sub { color: var(--muted); margin: 0; font-size: 1.05rem; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+  .chip {
+    font-size: 0.8rem; padding: 4px 11px; border-radius: 100px;
+    border: 1px solid var(--line-strong); color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  h2 {
+    font-size: 1.35rem; margin: 64px 0 4px; letter-spacing: -0.015em;
+    padding-top: 8px;
+  }
+  h2 .num {
+    display: inline-block; color: var(--muted); font-size: 0.85rem;
+    font-weight: 500; margin-right: 10px; vertical-align: 2px;
+    font-variant-numeric: tabular-nums;
+  }
+  h3 { font-size: 1.02rem; margin: 36px 0 6px; }
+  .lede { color: var(--muted); margin: 0 0 24px; }
+  p { margin: 0 0 16px; }
+
+  a { color: var(--tg); }
+  code {
+    background: var(--code-bg); padding: 1.5px 5px; border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.855em;
+  }
+
+  nav {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 12px; padding: 20px 24px; margin: 32px 0 8px;
+  }
+  nav p { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.08em;
+          color: var(--muted); margin: 0 0 12px; }
+  nav ol { margin: 0; padding-left: 1.3em; columns: 2; column-gap: 32px; }
+  @media (max-width: 620px) { nav ol { columns: 1; } }
+  nav li { margin-bottom: 5px; }
+  nav a { text-decoration: none; color: var(--text); }
+  nav a:hover { text-decoration: underline; }
+
+  figure { margin: 28px 0; }
+  .scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  svg { display: block; max-width: 100%; height: auto; }
+  /* 좁은 화면에서 도형을 줄여버리면 글자가 읽을 수 없게 된다.
+     축소하는 대신 컨테이너 안에서 가로로 스크롤시킨다. */
+  .scroll svg { min-width: 700px; }
+  svg text { font-family: system-ui, -apple-system, "Apple SD Gothic Neo", sans-serif; }
+  figcaption { color: var(--muted); font-size: 0.855rem; margin-top: 12px; }
+
+  table { border-collapse: collapse; width: 100%; font-size: 0.925rem; }
+  .scroll table { min-width: 520px; }
+  th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; }
+  tbody tr:last-child td { border-bottom: none; }
+  td code { white-space: nowrap; }
+
+  .note {
+    border-left: 3px solid var(--line-strong); padding: 2px 0 2px 18px;
+    margin: 24px 0; color: var(--muted);
+  }
+  .note strong { color: var(--text); }
+  .key {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 12px; padding: 20px 24px; margin: 28px 0;
+  }
+  .key h3 { margin-top: 0; }
+  .key p:last-child { margin-bottom: 0; }
+
+  /* 변환 파이프라인 */
+  /* minmax(0,1fr) 과 min-width:0 이 없으면 그리드 항목이 pre 의 min-content 폭까지
+     늘어나 페이지 전체가 가로로 넘친다. */
+  .stages { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; margin: 28px 0; }
+  .stage {
+    border: 1px solid var(--line); background: var(--surface);
+    border-radius: 12px; padding: 18px 20px; min-width: 0;
+  }
+  .stage-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .stage-n {
+    font-size: 0.7rem; font-weight: 700; letter-spacing: 0.05em;
+    background: var(--surface-2); color: var(--muted);
+    border-radius: 5px; padding: 3px 7px; font-variant-numeric: tabular-nums;
+  }
+  .stage-t { font-weight: 600; }
+  .stage-w { color: var(--muted); font-size: 0.85rem; }
+  .stage pre {
+    margin: 0; background: var(--code-bg); border-radius: 8px;
+    padding: 14px 16px; overflow-x: auto;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.8rem; line-height: 1.65; white-space: pre;
+  }
+  .arrow-down {
+    text-align: center; color: var(--line-strong); font-size: 1.1rem;
+    line-height: 1; padding: 7px 0;
+  }
+  .owner {
+    font-size: 0.72rem; padding: 2px 8px; border-radius: 100px; font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+  .owner.tg { background: var(--tg-bg); color: var(--tg); }
+  .owner.cl { background: var(--claude-bg); color: var(--claude); }
+  .owner.no { background: var(--notion-bg); color: var(--notion); }
+  .owner.lo { background: var(--local-bg); color: var(--local); }
+
+  /* 노션 블록 삽입 위치 */
+  .blocks { border: 1px solid var(--line); border-radius: 12px; overflow: hidden; margin: 24px 0; min-width: 460px; }
+  .blk {
+    padding: 9px 18px; border-bottom: 1px solid var(--line);
+    font-size: 0.9rem; display: flex; gap: 12px; align-items: center;
+  }
+  .blk:last-child { border-bottom: none; }
+  .blk .tag {
+    font-family: ui-monospace, Menlo, monospace; font-size: 0.68rem;
+    color: var(--muted); min-width: 132px; flex-shrink: 0;
+  }
+  .blk.head { background: var(--surface-2); font-weight: 600; }
+  .blk.new { background: var(--local-bg); color: var(--local); font-weight: 600; }
+  .blk.anchor { box-shadow: inset 3px 0 0 var(--warn); }
+  .blk .mark { margin-left: auto; font-size: 0.78rem; color: var(--warn); flex-shrink: 0; }
+  .blk.new .mark { color: var(--local); }
+
+  .role-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin: 28px 0; }
+  .role {
+    border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px;
+    background: var(--surface); border-top: 3px solid var(--line-strong);
+  }
+  .role.tg { border-top-color: var(--tg); }
+  .role.cl { border-top-color: var(--claude); }
+  .role.no { border-top-color: var(--notion); }
+  .role h3 { margin: 0 0 8px; font-size: 0.98rem; }
+  .role p { margin: 0 0 10px; font-size: 0.9rem; color: var(--muted); }
+  .role ul { margin: 0; padding-left: 1.15em; font-size: 0.875rem; color: var(--muted); }
+  .role li { margin-bottom: 4px; }
+  .role .no-do { margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--line); font-size: 0.83rem; }
+
+  footer { margin-top: 80px; padding-top: 28px; border-top: 1px solid var(--line);
+           color: var(--muted); font-size: 0.875rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>회고 에이전트는 어떻게 동작하는가</h1>
+  <p class="sub">텔레그램에 흘려보낸 조각글이 노션 일간 회고가 되기까지 — Telegram · Claude Code · Notion 세 시스템을 잇는 로컬 프로세스의 구조.</p>
+  <div class="chips">
+    <span class="chip">Node 20+ · 외부 의존성 0</span>
+    <span class="chip">테스트 154개</span>
+    <span class="chip">launchd 상시 실행</span>
+  </div>
+</header>
+
+<nav>
+  <p>목차</p>
+  <ol>
+    <li><a href="#overview">한눈에 보기</a></li>
+    <li><a href="#roles">세 시스템의 역할 분담</a></li>
+    <li><a href="#pipeline">조각글이 노션 블록이 되기까지</a></li>
+    <li><a href="#timeline">하루 동작 타임라인</a></li>
+    <li><a href="#dates">회고 날짜는 어떻게 정해지는가</a></li>
+    <li><a href="#states">승인 상태 머신</a></li>
+    <li><a href="#anchor">노션 페이지의 어디에 넣는가</a></li>
+    <li><a href="#modules">모듈 지도</a></li>
+    <li><a href="#failure">실패하면 어떻게 되는가</a></li>
+  </ol>
+</nav>
+
+<!-- ─────────────────────────────────────────── -->
+<h2 id="overview"><span class="num">01</span>한눈에 보기</h2>
+<p class="lede">외부 시스템은 셋, 내 Mac 에서 도는 프로세스는 하나다.</p>
+
+<figure>
+<div class="scroll">
+<svg viewBox="0 0 840 560" role="img" aria-label="전체 구조도">
+  <defs>
+    <marker id="ah" markerWidth="9" markerHeight="9" refX="7" refY="3.2" orient="auto">
+      <path d="M0,0 L7,3.2 L0,6.4 z" fill="var(--line-strong)"/>
+    </marker>
+    <marker id="ah-tg" markerWidth="9" markerHeight="9" refX="7" refY="3.2" orient="auto">
+      <path d="M0,0 L7,3.2 L0,6.4 z" fill="var(--tg)"/>
+    </marker>
+    <marker id="ah-no" markerWidth="9" markerHeight="9" refX="7" refY="3.2" orient="auto">
+      <path d="M0,0 L7,3.2 L0,6.4 z" fill="var(--notion)"/>
+    </marker>
+    <marker id="ah-cl" markerWidth="9" markerHeight="9" refX="7" refY="3.2" orient="auto">
+      <path d="M0,0 L7,3.2 L0,6.4 z" fill="var(--claude)"/>
+    </marker>
+  </defs>
+
+  <!-- 외부: Telegram -->
+  <rect x="24" y="16" width="250" height="66" rx="10" fill="var(--tg-bg)" stroke="var(--tg)" stroke-width="1.5"/>
+  <text x="44" y="42" font-size="14" font-weight="700" fill="var(--tg)">Telegram Bot API</text>
+  <text x="44" y="63" font-size="11.5" fill="var(--muted)">메시지 보관 · 인라인 버튼 · 리액션</text>
+
+  <!-- 외부: Notion -->
+  <rect x="566" y="16" width="250" height="66" rx="10" fill="var(--notion-bg)" stroke="var(--notion)" stroke-width="1.5"/>
+  <text x="586" y="42" font-size="14" font-weight="700" fill="var(--notion)">Notion REST API</text>
+  <text x="586" y="63" font-size="11.5" fill="var(--muted)">회고 DB · 페이지 · 블록</text>
+
+  <!-- 내 Mac 컨테이너 -->
+  <rect x="16" y="136" width="808" height="286" rx="14" fill="none" stroke="var(--local)" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <!-- 제목은 화살표(x=110, x=176)를 피해 오른쪽에 둔다 -->
+  <rect x="292" y="124" width="228" height="24" rx="6" fill="var(--bg)"/>
+  <text x="300" y="141" font-size="12" font-weight="700" fill="var(--local)">내 Mac — launchd 로 상시 실행</text>
+
+  <!-- index.js -->
+  <rect x="42" y="176" width="164" height="72" rx="9" fill="var(--surface)" stroke="var(--line-strong)"/>
+  <text x="56" y="203" font-size="13" font-weight="700" fill="var(--text)">index.js</text>
+  <text x="56" y="222" font-size="11" fill="var(--muted)">long-polling 루프</text>
+  <text x="56" y="238" font-size="11" fill="var(--muted)">30초 스케줄러 틱</text>
+
+  <!-- queue -->
+  <rect x="246" y="176" width="146" height="72" rx="9" fill="var(--surface-2)" stroke="var(--line-strong)"/>
+  <text x="260" y="203" font-size="13" font-weight="700" fill="var(--text)">queue.jsonl</text>
+  <text x="260" y="222" font-size="11" fill="var(--muted)">조각글 대기열</text>
+  <text x="260" y="238" font-size="11" fill="var(--muted)">append-only</text>
+
+  <!-- pipeline -->
+  <rect x="432" y="176" width="158" height="72" rx="9" fill="var(--surface)" stroke="var(--local)" stroke-width="1.8"/>
+  <text x="446" y="203" font-size="13" font-weight="700" fill="var(--text)">pipeline.js</text>
+  <text x="446" y="222" font-size="11" fill="var(--muted)">정리 → 미리보기</text>
+  <text x="446" y="238" font-size="11" fill="var(--muted)">→ 승인 → 저장</text>
+
+  <!-- notion.js -->
+  <rect x="630" y="176" width="164" height="72" rx="9" fill="var(--surface)" stroke="var(--line-strong)"/>
+  <text x="644" y="203" font-size="13" font-weight="700" fill="var(--text)">notion.js</text>
+  <text x="644" y="222" font-size="11" fill="var(--muted)">페이지 찾기/만들기</text>
+  <text x="644" y="238" font-size="11" fill="var(--muted)">블록 삽입 위치 계산</text>
+
+  <!-- compose.js -->
+  <rect x="432" y="318" width="158" height="66" rx="9" fill="var(--surface)" stroke="var(--line-strong)"/>
+  <text x="446" y="343" font-size="13" font-weight="700" fill="var(--text)">compose.js</text>
+  <text x="446" y="362" font-size="11" fill="var(--muted)">프롬프트 조립 · 검증</text>
+
+  <!-- claude -p -->
+  <rect x="630" y="318" width="164" height="66" rx="9" fill="var(--claude-bg)" stroke="var(--claude)" stroke-width="1.5"/>
+  <text x="644" y="343" font-size="13" font-weight="700" fill="var(--claude)">claude -p</text>
+  <text x="644" y="362" font-size="11" fill="var(--muted)">자식 프로세스</text>
+
+  <!-- 외부: Anthropic -->
+  <rect x="566" y="466" width="250" height="62" rx="10" fill="var(--claude-bg)" stroke="var(--claude)" stroke-width="1.5"/>
+  <text x="586" y="491" font-size="14" font-weight="700" fill="var(--claude)">Anthropic API</text>
+  <text x="586" y="511" font-size="11.5" fill="var(--muted)">CLI 에 이미 로그인된 인증 사용</text>
+
+  <!-- 화살표: Telegram ↔ index.js -->
+  <path d="M110,84 L110,172" fill="none" stroke="var(--tg)" stroke-width="1.6" marker-end="url(#ah-tg)"/>
+  <text x="102" y="115" font-size="11" fill="var(--tg)" text-anchor="end">조각글 · 명령</text>
+  <path d="M176,172 L176,86" fill="none" stroke="var(--tg)" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#ah-tg)"/>
+  <text x="186" y="115" font-size="11" fill="var(--tg)">미리보기 · 버튼</text>
+
+  <!-- index → queue -->
+  <path d="M208,212 L242,212" fill="none" stroke="var(--line-strong)" stroke-width="1.6" marker-end="url(#ah)"/>
+  <!-- queue → pipeline -->
+  <path d="M394,212 L428,212" fill="none" stroke="var(--line-strong)" stroke-width="1.6" marker-end="url(#ah)"/>
+  <!-- pipeline → notion.js -->
+  <path d="M592,212 L626,212" fill="none" stroke="var(--line-strong)" stroke-width="1.6" marker-end="url(#ah)"/>
+  <!-- notion.js → Notion API -->
+  <path d="M712,172 L712,86" fill="none" stroke="var(--notion)" stroke-width="1.6" marker-end="url(#ah-no)"/>
+  <text x="722" y="133" font-size="11" fill="var(--notion)">REST</text>
+
+  <!-- pipeline → compose -->
+  <path d="M511,250 L511,314" fill="none" stroke="var(--line-strong)" stroke-width="1.6" marker-end="url(#ah)"/>
+  <!-- compose → claude -->
+  <path d="M592,351 L626,351" fill="none" stroke="var(--claude)" stroke-width="1.6" marker-end="url(#ah-cl)"/>
+  <!-- claude → Anthropic -->
+  <path d="M712,386 L712,462" fill="none" stroke="var(--claude)" stroke-width="1.6" marker-end="url(#ah-cl)"/>
+
+  <!-- 스케줄러 틱 표시 -->
+  <path d="M124,248 L124,290 L428,290 L428,222" fill="none" stroke="var(--local)" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#ah)"/>
+  <text x="140" y="284" font-size="11" fill="var(--local)">30초마다: 정리할 날짜가 있나?</text>
+</svg>
+</div>
+<figcaption>실선은 요청 흐름, 점선은 응답과 주기적 확인. <code>pipeline.js</code> 가 전체 흐름의 중심이고, 나머지는 각자 한 가지만 한다.</figcaption>
+</figure>
+
+<div class="key">
+  <h3>설계의 핵심 한 줄</h3>
+  <p><strong>LLM 은 텍스트를 JSON 으로 바꾸는 일만 한다.</strong> 노션 API 호출, 페이지 탐색, 블록 삽입 위치 계산, 날짜 판단, 큐 관리는 전부 일반 코드가 처리한다.</p>
+  <p>이렇게 나눈 이유는 두 가지다. 실패할 수 있는 지점이 <em>한 군데</em>로 좁혀지고(그래서 그 한 군데에만 폴백을 두면 된다), 나머지 전부를 단위 테스트로 검증할 수 있다.</p>
+</div>
+
+<!-- ─────────────────────────────────────────── -->
+<h2 id="roles"><span class="num">02</span>세 시스템의 역할 분담</h2>
+<p class="lede">각 시스템이 무엇을 하고, 무엇을 <em>하지 않는지</em>가 구조를 결정했다.</p>
+
+<div class="role-grid">
+  <div class="role tg">
+    <h3>Telegram</h3>
+    <p>입력과 승인 창구.</p>
+    <ul>
+      <li>조각글을 아무 때나 받는다</li>
+      <li>미확인 메시지를 24시간 보관 — 맥이 자는 동안 온 것도 깨어나면 들어온다</li>
+      <li>인라인 버튼으로 승인·취소를 받는다</li>
+      <li><code>chat_id</code> 화이트리스트가 유일한 인증</li>
+    </ul>
+    <div class="no-do">하지 않는 것 — 조각글을 <em>저장</em>하지 않는다. 24시간이 지나면 사라지므로 받는 즉시 로컬 큐에 적는다.</div>
+  </div>
+
+  <div class="role cl">
+    <h3>Claude Code</h3>
+    <p>줄글을 구조로 바꾸는 단 하나의 일.</p>
+    <ul>
+      <li><code>claude -p</code> 를 자식 프로세스로 부른다</li>
+      <li><code>--json-schema</code> 로 출력 형태를 강제한다</li>
+      <li><code>--tools ''</code> — 도구를 전부 끈다</li>
+      <li><code>--safe-mode</code> — CLAUDE.md · 훅 · MCP · 플러그인 차단</li>
+    </ul>
+    <div class="no-do">하지 않는 것 — 노션을 만지지 않는다. API 키도 모르고, 어느 페이지에 쓰는지도 모른다. 받은 텍스트를 JSON 으로 돌려주고 끝난다.</div>
+  </div>
+
+  <div class="role no">
+    <h3>Notion</h3>
+    <p>최종 저장소.</p>
+    <ul>
+      <li>회고 DB 를 <code>날짜</code> + <code>주기=일간</code> 으로 조회</li>
+      <li>페이지가 없으면 템플릿 뼈대와 함께 만든다</li>
+      <li>섹션 헤딩 아래 정확한 위치에 블록을 끼워넣는다</li>
+      <li>Internal Integration 토큰으로 REST 직접 호출</li>
+    </ul>
+    <div class="no-do">하지 않는 것 — 상태를 갖지 않는다. 무엇이 아직 정리되지 않았는지는 노션이 아니라 로컬 <code>queue.jsonl</code> 이 안다.</div>
+  </div>
+</div>
+
+<div class="note">
+  <strong>왜 MCP 를 쓰지 않았나.</strong> Claude Code 에 이미 연결된 Notion MCP 는 OAuth 방식이라 백그라운드 프로세스가 재사용할 토큰이 없다. 세션이 만료되면 새벽에 조용히 실패한다. 그래서 노션은 Integration 토큰으로 직접 호출하고, Claude 에게는 노션 접근 권한을 아예 주지 않았다.
+</div>
+
+<!-- ─────────────────────────────────────────── -->
+<h2 id="pipeline"><span class="num">03</span>조각글이 노션 블록이 되기까지</h2>
+<p class="lede">같은 내용이 다섯 번 모습을 바꾼다. 각 단계에서 누가 책임을 지는지 표시했다.</p>
+
+<div class="stages">
+  <div class="stage">
+    <div class="stage-head">
+      <span class="stage-n">01</span><span class="stage-t">텔레그램 메시지</span>
+      <span class="owner tg">Telegram</span>
+      <span class="stage-w">퇴근길에 그냥 보낸 줄글</span>
+    </div>
+<pre>"결제 단계에서 이탈이 많은 것 같아서 각 단계마다 로그를 심으려다가,
+ 컴포넌트 정리랑 같이 하다 보니 결국 배포까지 못 갔다.
+ 단계가 4개나 되는 게 문제인 듯"</pre>
+  </div>
+
+  <div class="arrow-down">↓</div>
+
+  <div class="stage">
+    <div class="stage-head">
+      <span class="stage-n">02</span><span class="stage-t">큐에 한 줄 추가</span>
+      <span class="owner lo">queue.js</span>
+      <span class="stage-w">받는 즉시. 👌 리액션이 영수증</span>
+    </div>
+<pre>{"id":1042,"ts":"2026-07-29T20:11:03+09:00","text":"결제 단계에서…","messageId":1042}</pre>
+  </div>
+
+  <div class="arrow-down">↓</div>
+
+  <div class="stage">
+    <div class="stage-head">
+      <span class="stage-n">03</span><span class="stage-t">프롬프트 조립</span>
+      <span class="owner lo">compose.js</span>
+      <span class="stage-w">규칙 + 하루치 조각 + 이미 저장된 내용</span>
+    </div>
+<pre>prompts/compose.md 의 정리 규칙
+---
+## 회고 날짜
+2026-07-29
+
+## 오늘 들어온 조각글 (6개)
+1. [14:03] 장바구니 담기 버튼 눌러도…
+2. [20:11] 결제 단계에서 이탈이 많은 것 같아서…
+   …
+
+## 이미 저장된 내용 (중복해서 쓰지 말 것)
+## 오늘 한 일
+- 오전 스탠드업 참석</pre>
+  </div>
+
+  <div class="arrow-down">↓</div>
+
+  <div class="stage">
+    <div class="stage-head">
+      <span class="stage-n">04</span><span class="stage-t">구조화 JSON</span>
+      <span class="owner cl">claude -p</span>
+      <span class="stage-w">--json-schema 로 형태가 강제된 출력</span>
+    </div>
+<pre>{
+  "date": "2026-07-29",
+  "done": [{
+    "group": "결제 단계 개선",
+    "bullets": [{
+      "text": "결제 단계마다 로그를 심으려다가 컴포넌트 정리도 같이 하게 되어 배포까지 못 함",
+      "sub": ["단계가 4개나 되는 게 문제인 듯"]
+    }]
+  }],
+  "learnings": [{ "text": "한 번에 두 가지를 바꾸면 원인을 알 수 없게 된다", "sub": [] }],
+  "dropped": []
+}</pre>
+  </div>
+
+  <div class="arrow-down">↓</div>
+
+  <div class="stage">
+    <div class="stage-head">
+      <span class="stage-n">05</span><span class="stage-t">노션 블록</span>
+      <span class="owner lo">blocks.js</span>
+      <span class="stage-w">순수 함수. LLM 이 개입하지 않는다</span>
+    </div>
+<pre>[
+  { "type": "paragraph",          ← group 은 굵은 소제목
+    "paragraph": { "rich_text": [{ "text": {…}, "annotations": { "bold": true }}]}},
+  { "type": "bulleted_list_item", ← bullets[].text
+    "bulleted_list_item": {
+      "rich_text": […],
+      "children": [ { "type": "bulleted_list_item", … } ]   ← sub[] 는 중첩 불릿
+    }}
+]</pre>
+  </div>
+</div>
+
+<p>미리보기는 04 단계의 JSON 을 텔레그램 텍스트로 그린 것이다(<code>render.js</code>). 즉 <strong>승인 화면과 노션에 들어갈 내용은 같은 데이터에서 나온다</strong> — 보이는 것과 저장되는 것이 어긋날 수 없다.</p>
+
+<div class="note">
+  <strong>왜 LLM 에게 노션 블록 JSON 을 직접 만들게 하지 않았나.</strong> 블록 스키마는 중첩이 깊고 필드 이름이 까다롭다(<code>annotations.color</code> 는 글자색, <code>quote.color</code> 는 블록색). LLM 이 여기서 한 글자 틀리면 저장이 실패한다. 대신 04 의 단순한 형태만 맡기고, 05 변환은 테스트가 붙은 순수 함수로 두었다.
+</div>
+
+<!-- ─────────────────────────────────────────── -->
+<h2 id="timeline"><span class="num">04</span>하루 동작 타임라인</h2>
+<p class="lede">평소에는 조용히 받아두기만 하고, 정해진 시각에 한 번 말을 건다.</p>
+
+<figure>
+<div class="scroll">
+<svg viewBox="0 0 840 330" role="img" aria-label="하루 동작 타임라인">
+  <defs>
+    <marker id="t-ah" markerWidth="9" markerHeight="9" refX="7" refY="3.2" orient="auto">
+      <path d="M0,0 L7,3.2 L0,6.4 z" fill="var(--line-strong)"/>
+    </marker>
+  </defs>
+
+  <!-- 축 -->
+  <line x1="60" y1="150" x2="790" y2="150" stroke="var(--line-strong)" stroke-width="1.5" marker-end="url(#t-ah)"/>
+
+  <!-- 눈금 -->
+  <g font-size="11" fill="var(--muted)" text-anchor="middle">
+    <line x1="120" y1="144" x2="120" y2="156" stroke="var(--line-strong)"/><text x="120" y="175">10:30</text>
+    <line x1="250" y1="144" x2="250" y2="156" stroke="var(--line-strong)"/><text x="250" y="175">14:03</text>
+    <line x1="380" y1="144" x2="380" y2="156" stroke="var(--line-strong)"/><text x="380" y="175">20:11</text>
+    <line x1="530" y1="144" x2="530" y2="156" stroke="var(--tg)" stroke-width="2"/><text x="530" y="175" fill="var(--tg)" font-weight="700">23:00</text>
+    <line x1="640" y1="144" x2="640" y2="156" stroke="var(--line-strong)"/><text x="640" y="175">23:01</text>
+    <line x1="740" y1="144" x2="740" y2="156" stroke="var(--line-strong)"/><text x="740" y="175">23:01</text>
+  </g>
+
+  <!-- 위: 사용자 행동 -->
+  <g font-size="11.5">
+    <rect x="76" y="96" width="88" height="34" rx="7" fill="var(--tg-bg)" stroke="var(--tg)"/>
+    <text x="120" y="118" text-anchor="middle" fill="var(--tg)">조각글</text>
+    <rect x="206" y="96" width="88" height="34" rx="7" fill="var(--tg-bg)" stroke="var(--tg)"/>
+    <text x="250" y="118" text-anchor="middle" fill="var(--tg)">조각글</text>
+    <rect x="336" y="96" width="88" height="34" rx="7" fill="var(--tg-bg)" stroke="var(--tg)"/>
+    <text x="380" y="118" text-anchor="middle" fill="var(--tg)">조각글</text>
+    <rect x="592" y="96" width="96" height="34" rx="7" fill="var(--tg-bg)" stroke="var(--tg)"/>
+    <text x="640" y="118" text-anchor="middle" fill="var(--tg)">✅ 저장 탭</text>
+  </g>
+  <text x="60" y="72" font-size="11" font-weight="700" fill="var(--muted)">내가 하는 일</text>
+  <line x1="120" y1="132" x2="120" y2="146" stroke="var(--tg)" stroke-dasharray="3 2"/>
+  <line x1="250" y1="132" x2="250" y2="146" stroke="var(--tg)" stroke-dasharray="3 2"/>
+  <line x1="380" y1="132" x2="380" y2="146" stroke="var(--tg)" stroke-dasharray="3 2"/>
+  <line x1="640" y1="132" x2="640" y2="146" stroke="var(--tg)" stroke-dasharray="3 2"/>
+
+  <!-- 아래: 에이전트 행동 -->
+  <text x="60" y="212" font-size="11" font-weight="700" fill="var(--muted)">에이전트가 하는 일</text>
+  <g font-size="11">
+    <rect x="72" y="228" width="96" height="46" rx="7" fill="var(--surface)" stroke="var(--line-strong)"/>
+    <text x="120" y="247" text-anchor="middle" fill="var(--text)">큐에 append</text>
+    <text x="120" y="264" text-anchor="middle" fill="var(--muted)">👌 리액션</text>
+
+    <rect x="202" y="228" width="96" height="46" rx="7" fill="var(--surface)" stroke="var(--line-strong)"/>
+    <text x="250" y="247" text-anchor="middle" fill="var(--text)">큐에 append</text>
+    <text x="250" y="264" text-anchor="middle" fill="var(--muted)">👌 리액션</text>
+
+    <rect x="332" y="228" width="96" height="46" rx="7" fill="var(--surface)" stroke="var(--line-strong)"/>
+    <text x="380" y="247" text-anchor="middle" fill="var(--text)">큐에 append</text>
+    <text x="380" y="264" text-anchor="middle" fill="var(--muted)">👌 리액션</text>
+
+    <rect x="466" y="228" width="128" height="46" rx="7" fill="var(--claude-bg)" stroke="var(--claude)"/>
+    <text x="530" y="247" text-anchor="middle" fill="var(--claude)" font-weight="700">claude -p 정리</text>
+    <text x="530" y="264" text-anchor="middle" fill="var(--muted)">미리보기 전송</text>
+
+    <rect x="676" y="228" width="128" height="46" rx="7" fill="var(--notion-bg)" stroke="var(--notion)"/>
+    <text x="740" y="247" text-anchor="middle" fill="var(--notion)" font-weight="700">노션 저장</text>
+    <text x="740" y="264" text-anchor="middle" fill="var(--muted)">큐 → 아카이브</text>
+  </g>
+  <line x1="120" y1="154" x2="120" y2="224" stroke="var(--line-strong)" stroke-dasharray="3 2"/>
+  <line x1="250" y1="154" x2="250" y2="224" stroke="var(--line-strong)" stroke-dasharray="3 2"/>
+  <line x1="380" y1="154" x2="380" y2="224" stroke="var(--line-strong)" stroke-dasharray="3 2"/>
+  <line x1="530" y1="154" x2="530" y2="224" stroke="var(--claude)" stroke-dasharray="3 2"/>
+  <line x1="740" y1="154" x2="740" y2="224" stroke="var(--notion)" stroke-dasharray="3 2"/>
+
+  <!-- 큐 크기 -->
+  <text x="60" y="308" font-size="11" font-weight="700" fill="var(--muted)">큐 크기</text>
+  <g font-size="12" fill="var(--text)" text-anchor="middle" font-weight="600">
+    <text x="120" y="308">1</text><text x="250" y="308">2</text><text x="380" y="308">3</text>
+    <text x="530" y="308">3</text><text x="640" y="308">3</text>
+    <text x="740" y="308" fill="var(--local)">0</text>
+  </g>
+  <text x="530" y="26" font-size="11.5" fill="var(--claude)" text-anchor="middle">DIGEST_TIME</text>
+  <text x="762" y="308" font-size="10.5" fill="var(--muted)" text-anchor="start">←저장 성공 후</text>
+</svg>
+</div>
+<figcaption>큐는 <strong>저장이 성공한 뒤에야</strong> 비워진다. 23:00 에 정리하고 미리보기를 보낸 시점에도 큐 크기는 그대로 3이다.</figcaption>
+</figure>
+
+<h3>이 사이에 도는 두 개의 루프</h3>
+<div class="scroll">
+<table>
+  <thead><tr><th>루프</th><th>주기</th><th>하는 일</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><strong>폴링</strong></td>
+      <td><code>50초</code> long-poll</td>
+      <td>텔레그램에 매달려 있다가 메시지가 오면 즉시 처리. 실패하면 1초 → 최대 60초 백오프. 요청은 <code>65초</code>에 강제로 끊는다.</td>
+    </tr>
+    <tr>
+      <td><strong>스케줄러</strong></td>
+      <td><code>30초</code> 간격</td>
+      <td>“정리할 때가 된 날짜가 있나?”만 확인. 대부분의 틱은 아무것도 하지 않고 끝난다.</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<!-- ─────────────────────────────────────────── -->
+<h2 id="dates"><span class="num">05</span>회고 날짜는 어떻게 정해지는가</h2>
+<p class="lede">여기가 이 프로젝트에서 가장 미묘한 부분이다. 날짜를 <strong>“지금”이 아니라 조각이 쓰인 시각</strong>에서 뽑는다.</p>
+
+<figure>
+<div class="scroll">
+<svg viewBox="0 0 840 420" role="img" aria-label="회고 날짜 귀속 규칙">
+  <defs>
+    <marker id="d-ah" markerWidth="9" markerHeight="9" refX="7" refY="3.2" orient="auto">
+      <path d="M0,0 L7,3.2 L0,6.4 z" fill="var(--local)"/>
+    </marker>
+  </defs>
+
+  <!-- 시나리오 A -->
+  <text x="24" y="28" font-size="12.5" font-weight="700" fill="var(--text)">A. 새벽에 쓴 글 — DAY_CUTOFF_HOUR 경계</text>
+
+  <line x1="60" y1="86" x2="790" y2="86" stroke="var(--line-strong)" stroke-width="1.4"/>
+  <!-- cutoff 선 -->
+  <line x1="430" y1="58" x2="430" y2="126" stroke="var(--warn)" stroke-width="2" stroke-dasharray="5 3"/>
+  <text x="430" y="50" font-size="11" font-weight="700" fill="var(--warn)" text-anchor="middle">04:00 = cutoff</text>
+
+  <g font-size="11" fill="var(--muted)" text-anchor="middle">
+    <text x="150" y="108">화 21:00</text>
+    <text x="300" y="108">수 02:00</text>
+    <text x="560" y="108">수 09:00</text>
+    <text x="700" y="108">수 15:00</text>
+  </g>
+  <g>
+    <circle cx="150" cy="86" r="5.5" fill="var(--tg)"/>
+    <circle cx="300" cy="86" r="5.5" fill="var(--tg)"/>
+    <circle cx="560" cy="86" r="5.5" fill="var(--local)"/>
+    <circle cx="700" cy="86" r="5.5" fill="var(--local)"/>
+  </g>
+  <rect x="86" y="126" width="290" height="30" rx="6" fill="var(--tg-bg)" stroke="var(--tg)"/>
+  <text x="231" y="146" font-size="11.5" fill="var(--tg)" text-anchor="middle">→ 화요일 회고로 귀속</text>
+  <rect x="470" y="126" width="290" height="30" rx="6" fill="var(--local-bg)" stroke="var(--local)"/>
+  <text x="615" y="146" font-size="11.5" fill="var(--local)" text-anchor="middle">→ 수요일 회고로 귀속</text>
+
+  <!-- 구분선 -->
+  <line x1="24" y1="196" x2="816" y2="196" stroke="var(--line)"/>
+
+  <!-- 시나리오 B -->
+  <text x="24" y="228" font-size="12.5" font-weight="700" fill="var(--text)">B. 월요일 밤에 맥북을 덮고 화요일 아침에 열었다</text>
+
+  <!-- 잠자기 구간 -->
+  <rect x="230" y="264" width="270" height="58" rx="8" fill="var(--surface-2)" stroke="var(--line-strong)" stroke-dasharray="4 3"/>
+  <text x="365" y="290" font-size="11.5" fill="var(--muted)" text-anchor="middle">잠자기 — 프로세스 멈춤</text>
+  <text x="365" y="308" font-size="10.5" fill="var(--muted)" text-anchor="middle">23:00 틱을 놓친다</text>
+
+  <line x1="60" y1="293" x2="230" y2="293" stroke="var(--line-strong)" stroke-width="1.4"/>
+  <line x1="500" y1="293" x2="790" y2="293" stroke="var(--line-strong)" stroke-width="1.4"/>
+
+  <circle cx="110" cy="293" r="5.5" fill="var(--tg)"/>
+  <text x="110" y="258" font-size="11" fill="var(--muted)" text-anchor="middle">월 10:00</text>
+  <circle cx="185" cy="293" r="5.5" fill="var(--tg)"/>
+  <text x="185" y="258" font-size="11" fill="var(--muted)" text-anchor="middle">월 21:30</text>
+
+  <circle cx="560" cy="293" r="6.5" fill="var(--local)"/>
+  <text x="560" y="258" font-size="11" font-weight="700" fill="var(--local)" text-anchor="middle">화 09:00 기상</text>
+
+  <!-- 결과 -->
+  <path d="M560,302 L560,340" fill="none" stroke="var(--local)" stroke-width="1.6" marker-end="url(#d-ah)"/>
+  <rect x="356" y="348" width="410" height="52" rx="8" fill="var(--local-bg)" stroke="var(--local)" stroke-width="1.5"/>
+  <text x="376" y="370" font-size="11.5" font-weight="700" fill="var(--local)">큐의 두 조각은 ts 가 월요일 → 월요일 그룹</text>
+  <text x="376" y="389" font-size="11" fill="var(--muted)">월요일 23:00 임계 시각이 이미 지났으므로 지금 발송. 월요일 페이지로 저장.</text>
+
+  <!-- 구버전 대비 -->
+  <rect x="60" y="348" width="272" height="52" rx="8" fill="var(--warn-bg)" stroke="var(--warn)" stroke-dasharray="4 3"/>
+  <text x="76" y="370" font-size="11.5" font-weight="700" fill="var(--warn)">“지금”으로 계산했다면</text>
+  <text x="76" y="389" font-size="11" fill="var(--muted)">화요일 몫이 되어 날짜가 어긋난다</text>
+</svg>
+</div>
+<figcaption>임계 시각은 “그 <strong>회고 날짜 당일</strong>의 <code>DIGEST_TIME</code>”이다. 그래서 며칠 밀려 있어도 각 날짜가 자기 임계 시각 기준으로 판정된다.</figcaption>
+</figure>
+
+<h3>며칠 밀렸을 때</h3>
+<p>큐를 <code>ts</code> 로 날짜별로 묶고, <strong>한 회차에 한 날짜만</strong> 다룬다. 가장 오래된 날짜부터 미리보기가 오고, 승인하면 다음 날짜가 이어서 온다.</p>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>상황</th><th>동작</th></tr></thead>
+  <tbody>
+    <tr><td>월·화·수 조각이 섞여 있고 목요일 아침</td><td>월 → (승인) → 화 → (승인) → 수 순서로 각각 자기 날짜 페이지에 저장</td></tr>
+    <tr><td>어제 몫과 오늘 몫이 섞여 있고 오늘 오전</td><td>어제 몫만 발송. 오늘 몫은 오늘 23:00 을 기다린다</td></tr>
+    <tr><td><code>/now</code> 를 눌렀다</td><td>임계 시각과 처리 이력을 무시하고 가장 오래된 날짜부터 정리</td></tr>
+    <tr><td>미리보기를 취소했다</td><td>스케줄러는 그 날짜를 다시 들이밀지 않는다. <code>/now</code> 로는 다시 꺼낼 수 있다</td></tr>
+    <tr><td><code>ts</code> 가 깨진 조각</td><td>버리지 않고 오늘 몫으로 넣는다</td></tr>
+  </tbody>
+</table>
+</div>
+
+<!-- ─────────────────────────────────────────── -->
+<h2 id="states"><span class="num">06</span>승인 상태 머신</h2>
+<p class="lede">정리 결과는 <code>pending.json</code> 에 담긴 채 사람의 판단을 기다린다.</p>
+
+<figure>
+<div class="scroll">
+<svg viewBox="0 0 840 400" role="img" aria-label="승인 상태 머신">
+  <defs>
+    <marker id="s-ah" markerWidth="8" markerHeight="8" refX="6.5" refY="3" orient="auto">
+      <path d="M0,0 L6.5,3 L0,6 z" fill="var(--line-strong)"/>
+    </marker>
+    <marker id="s-ah-g" markerWidth="8" markerHeight="8" refX="6.5" refY="3" orient="auto">
+      <path d="M0,0 L6.5,3 L0,6 z" fill="var(--local)"/>
+    </marker>
+    <marker id="s-ah-w" markerWidth="8" markerHeight="8" refX="6.5" refY="3" orient="auto">
+      <path d="M0,0 L6.5,3 L0,6 z" fill="var(--warn)"/>
+    </marker>
+  </defs>
+
+  <!-- 대기 -->
+  <rect x="40" y="160" width="140" height="58" rx="9" fill="var(--surface)" stroke="var(--line-strong)"/>
+  <text x="110" y="184" font-size="12.5" font-weight="700" fill="var(--text)" text-anchor="middle">대기</text>
+  <text x="110" y="203" font-size="10.5" fill="var(--muted)" text-anchor="middle">pending 없음</text>
+
+  <!-- 승인 대기 -->
+  <rect x="300" y="150" width="176" height="78" rx="9" fill="var(--claude-bg)" stroke="var(--claude)" stroke-width="1.8"/>
+  <text x="388" y="176" font-size="12.5" font-weight="700" fill="var(--claude)" text-anchor="middle">승인 대기</text>
+  <text x="388" y="195" font-size="10.5" fill="var(--muted)" text-anchor="middle">pending.json 에</text>
+  <text x="388" y="211" font-size="10.5" fill="var(--muted)" text-anchor="middle">draft + 조각 스냅샷</text>
+
+  <!-- 저장됨 -->
+  <rect x="616" y="52" width="180" height="66" rx="9" fill="var(--local-bg)" stroke="var(--local)" stroke-width="1.8"/>
+  <text x="706" y="78" font-size="12.5" font-weight="700" fill="var(--local)" text-anchor="middle">저장 완료</text>
+  <text x="706" y="97" font-size="10.5" fill="var(--muted)" text-anchor="middle">큐 → 아카이브 이동</text>
+
+  <!-- 부분 저장 -->
+  <rect x="616" y="176" width="180" height="72" rx="9" fill="var(--warn-bg)" stroke="var(--warn)" stroke-dasharray="4 3"/>
+  <text x="706" y="200" font-size="12" font-weight="700" fill="var(--warn)" text-anchor="middle">저장 실패</text>
+  <text x="706" y="218" font-size="10.5" fill="var(--muted)" text-anchor="middle">progress 에 성공한</text>
+  <text x="706" y="233" font-size="10.5" fill="var(--muted)" text-anchor="middle">섹션 기록 · 큐 유지</text>
+
+  <!-- 화살표 -->
+  <path d="M182,182 L296,182" fill="none" stroke="var(--line-strong)" stroke-width="1.6" marker-end="url(#s-ah)"/>
+  <text x="239" y="172" font-size="10.5" fill="var(--muted)" text-anchor="middle">23:00 / /now</text>
+
+  <path d="M478,172 L612,104" fill="none" stroke="var(--local)" stroke-width="1.6" marker-end="url(#s-ah-g)"/>
+  <text x="556" y="128" font-size="10.5" fill="var(--local)" text-anchor="middle" font-weight="700">✅ 저장</text>
+
+  <path d="M478,200 L612,206" fill="none" stroke="var(--warn)" stroke-width="1.6" marker-end="url(#s-ah-w)"/>
+  <text x="548" y="224" font-size="10.5" fill="var(--warn)" text-anchor="middle">노션 오류</text>
+
+  <!-- 재시도: 부분 저장 → 승인 대기 -->
+  <path d="M660,252 L660,300 L400,300 L392,232" fill="none" stroke="var(--warn)" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#s-ah-w)"/>
+  <text x="530" y="316" font-size="10.5" fill="var(--warn)" text-anchor="middle">🔁 재시도 — 성공한 섹션은 건너뛴다</text>
+
+  <!-- 다시 정리 (self loop) -->
+  <path d="M330,146 L330,110 L446,110 L446,146" fill="none" stroke="var(--line-strong)" stroke-width="1.4" marker-end="url(#s-ah)"/>
+  <text x="388" y="102" font-size="10.5" fill="var(--muted)" text-anchor="middle">🔄 다시 정리 — 같은 조각으로 재요청</text>
+
+  <!-- 취소 → 대기 -->
+  <path d="M320,232 L320,364 L110,364 L110,222" fill="none" stroke="var(--line-strong)" stroke-width="1.4" marker-end="url(#s-ah)"/>
+  <text x="215" y="380" font-size="10.5" fill="var(--muted)" text-anchor="middle">❌ 취소 — 조각은 큐에 그대로</text>
+
+  <!-- 저장 완료 → 대기 (undo) -->
+  <path d="M706,46 L706,20 L110,20 L110,156" fill="none" stroke="var(--line-strong)" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#s-ah)"/>
+  <text x="408" y="14" font-size="10.5" fill="var(--muted)" text-anchor="middle">/undo — 블록 삭제 + 조각을 큐로 복원</text>
+</svg>
+</div>
+<figcaption>승인 대기 중에는 스케줄러가 아무것도 하지 않는다. 그 사이 들어온 새 조각은 큐에 쌓이고, 저장할 때 <strong>스냅샷에 포함된 조각만</strong> 빠진다.</figcaption>
+</figure>
+
+<div class="note">
+  <strong>재시도가 중복을 만들지 않는 이유.</strong> 두 섹션을 순서대로 삽입하는데, 첫 섹션은 성공하고 두 번째에서 실패할 수 있다. 그대로 재시도하면 첫 섹션이 두 번 들어간다. 그래서 섹션 단위로 <code>progress</code> 를 <code>pending.json</code> 에 기록하고, 재시도 시 이미 끝난 섹션은 건너뛴다.
+</div>
+
+<!-- ─────────────────────────────────────────── -->
+<h2 id="anchor"><span class="num">07</span>노션 페이지의 어디에 넣는가</h2>
+<p class="lede">페이지 끝에 붙이면 안 된다. <code>오늘 한 일</code> 은 <code>오늘 한 일</code> 섹션 안으로 들어가야 한다.</p>
+
+<p>노션 API 는 “이 블록 뒤에 넣어라”(<code>after</code>)만 받는다. 그래서 페이지의 최상위 블록을 읽어 <strong>섹션의 마지막 블록</strong>을 직접 찾아야 한다.</p>
+
+<div class="scroll">
+<div class="blocks">
+  <div class="blk head"><span class="tag">heading_2</span>오늘 한 일</div>
+  <div class="blk"><span class="tag">quote</span>오늘 있었던 일·활동을 사실 위주로…</div>
+  <div class="blk"><span class="tag">paragraph (bold)</span>장바구니 개선</div>
+  <div class="blk anchor"><span class="tag">bulleted_list_item</span>담기 버튼 버그 수정<span class="mark">← 기준점 (after)</span></div>
+  <div class="blk new"><span class="tag">paragraph (bold)</span>결제 단계 개선<span class="mark">새로 삽입</span></div>
+  <div class="blk new"><span class="tag">bulleted_list_item</span>로그를 심으려다 배포까지 못 함<span class="mark">새로 삽입</span></div>
+  <div class="blk"><span class="tag">divider</span>———<span class="mark" style="color:var(--muted)">여기서 탐색 중단</span></div>
+  <div class="blk head"><span class="tag">heading_2</span>한 줄 배움 / 감정</div>
+  <div class="blk"><span class="tag">quote</span>오늘 배운 것, 느낀 감정을 한 줄로…</div>
+</div>
+</div>
+
+<p>탐색 규칙은 세 줄이다.</p>
+<ol>
+  <li>텍스트가 섹션 제목과 같은 <code>heading_2</code> 를 찾는다</li>
+  <li>거기서부터 아래로 내려가다 <code>divider</code> 또는 다음 <code>heading_2</code> 를 만나면 멈춘다</li>
+  <li>멈추기 직전의 블록이 기준점 — 그 뒤에 삽입한다</li>
+</ol>
+
+<p>섹션이 비어 있으면 기준점은 가이드 <code>quote</code> 가 된다. 섹션 헤딩 자체가 없으면 헤딩과 가이드를 함께 만들어 페이지 끝에 붙인다.</p>
+
+<div class="note">
+  두 섹션을 삽입할 때 <strong>매번 페이지 블록을 다시 읽는다.</strong> 첫 삽입이 두 번째 기준점의 위치를 흔들 수 있어서다. API 호출 한 번을 아끼는 것보다 어긋나지 않는 게 중요하다.
+</div>
+
+<!-- ─────────────────────────────────────────── -->
+<h2 id="modules"><span class="num">08</span>모듈 지도</h2>
+<p class="lede">파일 하나가 한 가지만 한다. 괄호 안은 그 모듈을 검증하는 테스트다.</p>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>파일</th><th>책임</th><th>외부와 닿는 곳</th></tr></thead>
+  <tbody>
+    <tr><td><code>index.js</code></td><td>부트스트랩 · 폴링 루프 · 스케줄러 틱 · chat_id 화이트리스트</td><td>Telegram</td></tr>
+    <tr><td><code>pipeline.js</code></td><td>정리 → 미리보기 → 승인 → 저장 상태 머신 <em>(pipeline.test)</em></td><td>—</td></tr>
+    <tr><td><code>compose.js</code></td><td><code>claude -p</code> 호출 · 스키마 검증 · 재시도 · 폴백 <em>(compose.test)</em></td><td>claude CLI</td></tr>
+    <tr><td><code>notion.js</code></td><td>페이지 조회/생성 · 삽입 위치 계산 · 재시도 <em>(notion.test)</em></td><td>Notion</td></tr>
+    <tr><td><code>blocks.js</code></td><td>RetroDraft → 노션 블록 (순수 함수) <em>(blocks.test)</em></td><td>—</td></tr>
+    <tr><td><code>render.js</code></td><td>RetroDraft → 텔레그램 미리보기 텍스트 <em>(render.test)</em></td><td>—</td></tr>
+    <tr><td><code>schedule.js</code></td><td>날짜 귀속 · 날짜별 묶기 · 발송 시점 판정 <em>(schedule.test)</em></td><td>—</td></tr>
+    <tr><td><code>queue.js</code></td><td>조각글 큐 · 아카이브 · 복원 <em>(queue.test)</em></td><td>파일시스템</td></tr>
+    <tr><td><code>telegram.js</code></td><td>Bot API 래퍼 · 타임아웃 · 메시지 분할 <em>(telegram.test)</em></td><td>Telegram</td></tr>
+    <tr><td><code>config.js</code></td><td>환경변수 검증 · 노션 id 정규화 <em>(config.test)</em></td><td>—</td></tr>
+    <tr><td><code>commands.js</code></td><td><code>/now</code> <code>/queue</code> <code>/status</code> <code>/undo</code> <code>/help</code> 라우팅</td><td>—</td></tr>
+    <tr><td><code>store.js</code></td><td>작은 JSON 상태 파일 · 원자적 쓰기</td><td>파일시스템</td></tr>
+  </tbody>
+</table>
+</div>
+
+<h3>상태는 전부 <code>data/</code> 에 있다</h3>
+<div class="scroll">
+<table>
+  <thead><tr><th>파일</th><th>내용</th></tr></thead>
+  <tbody>
+    <tr><td><code>queue.jsonl</code></td><td>아직 정리되지 않은 조각글</td></tr>
+    <tr><td><code>archive/&lt;날짜&gt;.jsonl</code></td><td>정리를 마친 조각의 원문 — 삭제하지 않고 여기로 옮긴다</td></tr>
+    <tr><td><code>pending.json</code></td><td>승인 대기 중인 draft · 조각 스냅샷 · 부분 저장 진행 상황</td></tr>
+    <tr><td><code>offset.json</code></td><td>텔레그램 업데이트 커서 — 같은 메시지를 두 번 처리하지 않기 위해</td></tr>
+    <tr><td><code>digest-state.json</code></td><td>자동 발송을 마친 회고 날짜 목록 (최근 60일)</td></tr>
+    <tr><td><code>last-write.json</code></td><td><code>/undo</code> 대상 블록 id 와 조각 원문</td></tr>
+  </tbody>
+</table>
+</div>
+<p class="lede" style="margin-top:14px">이 디렉터리는 <code>.gitignore</code> 에 걸려 있다. 회고 원문이 그대로 쌓이는 곳이라 가장 중요한 방어선이다.</p>
+
+<!-- ─────────────────────────────────────────── -->
+<h2 id="failure"><span class="num">09</span>실패하면 어떻게 되는가</h2>
+<p class="lede">전 구간을 지배하는 하나의 규칙 — <strong>조각글은 유실되지 않는다.</strong></p>
+
+<div class="scroll">
+<table>
+  <thead><tr><th>실패 지점</th><th>대응</th><th>조각글은</th></tr></thead>
+  <tbody>
+    <tr>
+      <td>텔레그램 연결 끊김</td>
+      <td>1초 → 최대 60초 백오프 재시도</td>
+      <td>텔레그램이 24시간 보관 → 복구되면 들어온다</td>
+    </tr>
+    <tr>
+      <td>잠자기 후 소켓이 죽어 매달림</td>
+      <td><code>AbortSignal.timeout()</code> 으로 끊고 백오프 경로로 진입</td>
+      <td>안전</td>
+    </tr>
+    <tr>
+      <td><code>claude -p</code> 출력이 스키마와 다름</td>
+      <td>형식을 지적해 1회 재시도</td>
+      <td>큐에 그대로</td>
+    </tr>
+    <tr>
+      <td>재시도도 실패 / claude 미설치 / 사용량 초과</td>
+      <td>폴백 draft — 원문 전부를 <code>미분류</code> 로. 미리보기에 경고 표시</td>
+      <td>원문 그대로 노션에 들어간다</td>
+    </tr>
+    <tr>
+      <td>노션 429 / 5xx / 타임아웃</td>
+      <td><code>Retry-After</code> 존중, 최대 3회 재시도</td>
+      <td>큐에 그대로</td>
+    </tr>
+    <tr>
+      <td>노션 저장 최종 실패</td>
+      <td>큐를 비우지 않고 재시도 버튼 제시</td>
+      <td>큐에 그대로 — 다시 시도 가능</td>
+    </tr>
+    <tr>
+      <td>첫 섹션만 저장되고 실패</td>
+      <td><code>progress</code> 에 기록 → 재시도 시 그 섹션은 건너뛴다</td>
+      <td>중복 없이 이어서 저장</td>
+    </tr>
+    <tr>
+      <td>정리 결과가 마음에 안 든다</td>
+      <td>🔄 다시 정리 · 또는 저장 후 <code>/undo</code></td>
+      <td><code>/undo</code> 시 큐로 복원</td>
+    </tr>
+    <tr>
+      <td>맥이 24시간 넘게 꺼져 있었다</td>
+      <td>구조적 한계 — 텔레그램 보관 기간을 넘긴다</td>
+      <td><strong>유실</strong>. 장기 부재가 예상되면 클라우드 전환이 답</td>
+    </tr>
+  </tbody>
+</table>
+</div>
+
+<div class="key">
+  <h3>불변 조건 셋</h3>
+  <p><strong>1.</strong> 노션 저장이 성공하기 전까지 큐에서 조각을 빼지 않는다.</p>
+  <p><strong>2.</strong> 큐에서 뺄 때도 삭제가 아니라 아카이브로 옮긴다.</p>
+  <p><strong>3.</strong> 어느 실패 경로로 가도 원문은 어딘가에 남아 있다 — 큐, 아카이브, 또는 <code>미분류</code> 로 들어간 노션 페이지.</p>
+</div>
+
+<footer>
+  회고 에이전트 · Telegram + Claude Code + Notion<br>
+  소스와 셋업 절차는 저장소 <code>README.md</code> 를, 정리 규칙은 <code>prompts/compose.md</code> 를 참고.
+</footer>
+
+</div>
+</body>
+</html>
