@@ -815,6 +815,7 @@
     <tr><td><code>index.js</code></td><td>부트스트랩 · 폴링 루프 · 스케줄러 틱 · chat_id 화이트리스트</td><td>Telegram</td></tr>
     <tr><td><code>pipeline.js</code></td><td>정리 → 미리보기 → 승인 → 저장 상태 머신 <em>(pipeline.test)</em></td><td>—</td></tr>
     <tr><td><code>compose.js</code></td><td><code>claude -p</code> 호출 · 스키마 검증 · 재시도 · 폴백 <em>(compose.test)</em></td><td>claude CLI</td></tr>
+    <tr><td><code>transcribe.js</code></td><td>음성 메모 → 텍스트 전사 · 타임아웃 (선택, <code>GROQ_API_KEY</code> 있을 때만) <em>(transcribe.test)</em></td><td>Groq Whisper</td></tr>
     <tr><td><code>notion.js</code></td><td>페이지 조회/생성 · 삽입 위치 계산 · 재시도 <em>(notion.test)</em></td><td>Notion</td></tr>
     <tr><td><code>blocks.js</code></td><td>RetroDraft → 노션 블록 (순수 함수) <em>(blocks.test)</em></td><td>—</td></tr>
     <tr><td><code>render.js</code></td><td>RetroDraft → 텔레그램 미리보기 텍스트 <em>(render.test)</em></td><td>—</td></tr>

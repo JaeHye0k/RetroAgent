@@ -5,8 +5,10 @@ import { ConfigError, loadConfig } from './config.js';
 import { Notion } from './notion.js';
 import { Pipeline } from './pipeline.js';
 import { Queue } from './queue.js';
+import { escapeHtml } from './render.js';
 import { JsonStore } from './store.js';
 import { Telegram } from './telegram.js';
+import { Transcriber } from './transcribe.js';
 
 const POLL_TIMEOUT_SECONDS = 50;
 const SCHEDULER_INTERVAL_MS = 30_000;
@@ -29,6 +31,7 @@ async function main() {
   const telegram = new Telegram({ token: config.telegram.token });
   const notion = new Notion({ token: config.notion.token, dbId: config.notion.dbId });
   const composer = new Composer(config.claude);
+  const transcriber = new Transcriber(config.groq);
   const queue = new Queue({ dir: config.dataDir });
   const pipeline = new Pipeline({ config, telegram, notion, composer, queue });
   const offsetStore = new JsonStore(path.join(config.dataDir, 'offset.json'), { offset: 0 });
@@ -72,7 +75,7 @@ async function main() {
       // 같은 업데이트를 두 번 처리하지 않도록 처리 전에 offset 을 확정한다.
       await offsetStore.write({ offset });
       try {
-        await handleUpdate(update, { config, telegram, pipeline });
+        await handleUpdate(update, { config, telegram, pipeline, transcriber });
       } catch (error) {
         console.error('[handle] 처리 실패:', error);
       }
@@ -80,7 +83,7 @@ async function main() {
   }
 }
 
-async function handleUpdate(update, { config, telegram, pipeline }) {
+async function handleUpdate(update, { config, telegram, pipeline, transcriber }) {
   const chatId = update.message?.chat?.id ?? update.callback_query?.message?.chat?.id;
 
   // 봇 토큰이 새어나가도 남이 내 회고에 쓸 수는 없어야 한다.
@@ -95,14 +98,26 @@ async function handleUpdate(update, { config, telegram, pipeline }) {
   }
 
   const message = update.message;
+
+  // 음성 메모는 STT 로 텍스트로 바꾼 뒤 텍스트 조각과 똑같은 경로로 큐에 넣는다.
+  if (message?.voice) {
+    await handleVoice(message, { config, telegram, pipeline, transcriber });
+    return;
+  }
+
   const text = (message?.text ?? message?.caption ?? '').trim();
   if (!text) {
-    await telegram.sendMessage(config.telegram.chatId, '텍스트만 받을 수 있습니다.');
+    await telegram.sendMessage(config.telegram.chatId, '텍스트나 음성 메모만 받을 수 있습니다.');
     return;
   }
 
   if (text.startsWith('/') && (await handleCommand(text, { pipeline, config }))) return;
 
+  await enqueueFragment(message, text, { pipeline, telegram, config });
+}
+
+/** 조각을 큐에 넣고 받았다는 신호를 남긴다. 텍스트·음성이 공유하는 마지막 단계. */
+async function enqueueFragment(message, text, { pipeline, telegram, config }) {
   await pipeline.queue.append({
     id: message.message_id,
     ts: new Date((message.date ?? Math.floor(Date.now() / 1000)) * 1000).toISOString(),
@@ -110,6 +125,59 @@ async function handleUpdate(update, { config, telegram, pipeline }) {
     messageId: message.message_id,
   });
   await telegram.react(config.telegram.chatId, message.message_id, '👌');
+}
+
+/**
+ * 음성 메모 → 다운로드 → STT → 인식 결과 회신 → 큐 적재.
+ * 어느 단계에서 실패해도 프로세스를 죽이지 않고 원인을 회신한다. 음성 원본은
+ * 큐에 남기지 않으므로, 실패하면 다시 보내거나 텍스트로 입력하도록 안내한다.
+ */
+async function handleVoice(message, { config, telegram, pipeline, transcriber }) {
+  const chatId = config.telegram.chatId;
+
+  if (!transcriber.enabled) {
+    await telegram.sendMessage(
+      chatId,
+      '🎙️ 음성 인식이 설정되지 않았습니다. .env 에 GROQ_API_KEY 를 넣어주세요.',
+      { reply_to_message_id: message.message_id },
+    );
+    return;
+  }
+
+  const { voice } = message;
+  try {
+    // 받아서 처리 중이라는 신호. 인식은 몇 초 걸릴 수 있다.
+    await telegram.react(chatId, message.message_id, '✍️');
+
+    const file = await telegram.getFile(voice.file_id);
+    const buffer = await telegram.downloadFile(file.file_path);
+    // 텔레그램 voice 는 .oga 지만 Groq 는 확장자로 포맷을 가려 .oga 를 거부한다.
+    // 내용은 ogg/opus 이므로 .ogg 로 넘긴다.
+    const text = await transcriber.transcribe(buffer, {
+      filename: 'voice.ogg',
+      mimeType: voice.mime_type || 'audio/ogg',
+    });
+
+    if (!text) {
+      await telegram.sendMessage(chatId, '🎙️ 음성에서 텍스트를 찾지 못했습니다. 다시 말씀해 주세요.', {
+        reply_to_message_id: message.message_id,
+      });
+      return;
+    }
+
+    // 오인식을 눈으로 확인할 수 있게 인식 결과를 먼저 보여준 뒤 큐에 넣는다.
+    await telegram.sendMessage(chatId, `🎙️ 인식됨:\n${escapeHtml(text)}`, {
+      reply_to_message_id: message.message_id,
+    });
+    await enqueueFragment(message, text, { pipeline, telegram, config });
+  } catch (error) {
+    console.error('[voice] 인식 실패:', error);
+    await telegram.sendMessage(
+      chatId,
+      `❌ 음성 인식에 실패했습니다.\n<code>${escapeHtml(error.message)}</code>\n\n다시 보내거나 텍스트로 입력해 주세요.`,
+      { reply_to_message_id: message.message_id },
+    );
+  }
 }
 
 main().catch((error) => {

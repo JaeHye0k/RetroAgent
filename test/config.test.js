@@ -92,4 +92,26 @@ describe('loadConfig', () => {
     assert.throws(() => loadConfig({ ...VALID, DAY_CUTOFF_HOUR: '-1' }), /DAY_CUTOFF_HOUR/);
     assert.throws(() => loadConfig({ ...VALID, DAY_CUTOFF_HOUR: '넷' }), /DAY_CUTOFF_HOUR/);
   });
+
+  test('GROQ_API_KEY 는 선택값 — 없어도 설정을 만든다', () => {
+    const config = loadConfig({ ...VALID });
+    assert.equal(config.groq.apiKey, '');
+    assert.equal(config.groq.model, 'whisper-large-v3-turbo');
+    assert.equal(config.groq.language, 'ko');
+    assert.equal(config.groq.timeoutMs, 60_000);
+  });
+
+  test('GROQ_API_KEY 와 STT 설정을 덮어쓸 수 있다', () => {
+    const config = loadConfig({
+      ...VALID,
+      GROQ_API_KEY: '  gsk_abc  ',
+      GROQ_STT_MODEL: 'whisper-large-v3',
+      STT_LANGUAGE: 'en',
+      STT_TIMEOUT_MS: '30000',
+    });
+    assert.equal(config.groq.apiKey, 'gsk_abc');
+    assert.equal(config.groq.model, 'whisper-large-v3');
+    assert.equal(config.groq.language, 'en');
+    assert.equal(config.groq.timeoutMs, 30_000);
+  });
 });

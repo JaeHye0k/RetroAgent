@@ -109,6 +109,54 @@ describe('sendLong', () => {
   });
 });
 
+describe('getFile / downloadFile — 음성 파일 받기', () => {
+  test('getFile 은 file_id 로 getFile 을 부른다', async () => {
+    const fetchImpl = okFetch({ file_path: 'voice/file_1.oga', file_size: 1234 });
+    const telegram = new Telegram({ token: 't', fetchImpl });
+
+    const file = await telegram.getFile('AbC123');
+    assert.match(fetchImpl.calls[0].url, /\/getFile$/);
+    assert.equal(fetchImpl.calls[0].body.file_id, 'AbC123');
+    assert.equal(file.file_path, 'voice/file_1.oga');
+  });
+
+  test('downloadFile 은 파일 URL 로 받아 arrayBuffer 를 돌려준다', async () => {
+    const bytes = new Uint8Array([1, 2, 3, 4]).buffer;
+    const calls = [];
+    const fetchImpl = async (url, options) => {
+      calls.push({ url, options });
+      return { ok: true, status: 200, arrayBuffer: async () => bytes };
+    };
+    const telegram = new Telegram({ token: 'TOK', fetchImpl });
+
+    const buffer = await telegram.downloadFile('voice/file_1.oga');
+    assert.equal(calls[0].url, 'https://api.telegram.org/file/botTOK/voice/file_1.oga');
+    assert.ok(calls[0].options.signal instanceof AbortSignal, '다운로드에도 타임아웃이 붙어야 한다');
+    assert.deepEqual(new Uint8Array(buffer), new Uint8Array([1, 2, 3, 4]));
+  });
+
+  test('다운로드가 실패하면 TelegramError 로 바꾼다', async () => {
+    const telegram = new Telegram({
+      token: 't',
+      fetchImpl: async () => ({ ok: false, status: 404, arrayBuffer: async () => new ArrayBuffer(0) }),
+    });
+
+    await assert.rejects(
+      () => telegram.downloadFile('voice/x.oga'),
+      (error) => {
+        assert.ok(error instanceof TelegramError);
+        assert.equal(error.status, 404);
+        return true;
+      },
+    );
+  });
+
+  test('다운로드가 매달리면 끊는다', async () => {
+    const telegram = new Telegram({ token: 't', fetchImpl: hangingFetch, timeoutMs: 40 });
+    await assert.rejects(() => telegram.downloadFile('voice/x.oga'), /40ms/);
+  });
+});
+
 describe('react', () => {
   test('리액션이 실패해도 본 흐름을 막지 않는다', async () => {
     const telegram = new Telegram({

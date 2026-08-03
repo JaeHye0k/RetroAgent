@@ -65,6 +65,38 @@ export class Telegram {
     return this.call('getMe');
   }
 
+  /** file_id 로 다운로드에 필요한 file_path 를 받아온다. */
+  getFile(fileId) {
+    return this.call('getFile', { file_id: fileId });
+  }
+
+  /**
+   * getFile 로 받은 file_path 의 실제 바이트를 내려받는다.
+   * 봇 API(api.telegram.org/bot…)와 달리 파일은 /file/bot… 경로에서 받는다.
+   */
+  async downloadFile(filePath, { timeoutMs = this.timeoutMs } = {}) {
+    let response;
+    try {
+      response = await this.fetchImpl(`https://api.telegram.org/file/bot${this.token}/${filePath}`, {
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (error) {
+      const timedOut = error.name === 'TimeoutError' || error.name === 'AbortError';
+      throw new TelegramError(
+        timedOut ? `파일 다운로드: ${timeoutMs}ms 안에 응답이 없어 끊었습니다` : `파일 다운로드: ${error.message}`,
+        { method: 'downloadFile', cause: error },
+      );
+    }
+
+    if (!response.ok) {
+      throw new TelegramError(`파일 다운로드 실패 (HTTP ${response.status})`, {
+        method: 'downloadFile',
+        status: response.status,
+      });
+    }
+    return response.arrayBuffer();
+  }
+
   /**
    * long-polling. timeout 초 동안 서버가 붙들고 있다가 응답한다.
    * 끊는 한도는 그보다 넉넉히 잡아야 정상 long-poll 을 오인해 끊지 않는다.

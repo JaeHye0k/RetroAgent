@@ -14,12 +14,13 @@
 |---|---|
 | `src/index.js` | 텔레그램 long-polling + 30초 스케줄러 틱 |
 | `src/compose.js` | `claude -p` 를 불러 조각글을 구조화 JSON 으로 변환 |
+| `src/transcribe.js` | Groq Whisper 로 음성 메모를 텍스트로 전사 |
 | `src/notion.js` | 노션 REST API — 페이지 찾기/만들기, 섹션에 블록 끼워넣기 |
 | `src/pipeline.js` | 정리 → 미리보기 → 승인 → 저장 상태 머신 |
 
 **LLM 은 텍스트를 JSON 으로 바꾸는 일만 한다.** 노션 API 호출, 페이지 탐색, 블록 삽입 위치 계산은 전부 일반 코드가 처리한다. 그래서 실패 지점이 좁고 단위 테스트가 가능하다.
 
-외부 의존성은 없다. Node 내장 `fetch`, `--env-file`, `node:test` 만 쓴다.
+npm 의존성은 없다. Node 내장 `fetch`·`FormData`, `--env-file`, `node:test` 만 쓴다. 음성 인식은 선택 기능으로, `GROQ_API_KEY` 가 있을 때만 Groq Whisper API 를 호출한다.
 
 > 구조도와 데이터 흐름 다이어그램은 [`docs/architecture.html`](docs/architecture.html) 에 있다. 브라우저로 열면 된다.
 
@@ -93,7 +94,9 @@ npm run install-agent
 
 ## 쓰는 법
 
-생각날 때마다 봇에게 그냥 보낸다. 👌 리액션이 붙으면 큐에 들어갔다는 뜻이다.
+생각날 때마다 봇에게 그냥 보낸다. 텍스트도 되고 🎙️ **음성 메모**도 된다. 👌 리액션이 붙으면 큐에 들어갔다는 뜻이다.
+
+음성 메모를 보내면 Groq Whisper 로 텍스트로 옮긴 뒤 `🎙️ 인식됨: …` 으로 결과를 먼저 보여주고 큐에 넣는다. 오인식이면 그 자리에서 눈으로 확인할 수 있다. 음성 인식을 쓰려면 [`console.groq.com/keys`](https://console.groq.com/keys) 에서 키를 발급해 `.env` 의 `GROQ_API_KEY` 에 넣는다. 키가 없으면 음성은 무시하고 안내만 보내며, 텍스트 흐름은 그대로 돈다.
 
 | 명령 | 동작 |
 |---|---|
@@ -184,4 +187,3 @@ npm test
 
 - 주간 회고 자동 생성 (`지난주 Try 점검` 체크박스 연동)
 - 텔레그램에서 노션 조회·질의
-- 음성 메시지 전사

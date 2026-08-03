@@ -79,6 +79,14 @@ export function loadConfig(env = process.env) {
       model: (env.CLAUDE_MODEL ?? 'sonnet').trim(),
       timeoutMs: Number(env.COMPOSE_TIMEOUT_MS ?? 240_000),
     },
+    // 음성 인식은 선택 기능이다. GROQ_API_KEY 가 없으면 apiKey 가 빈 문자열이고,
+    // 음성 메시지가 들어올 때만 안내를 보낸다. 텍스트 흐름은 키 없이도 그대로 돈다.
+    groq: {
+      apiKey: (env.GROQ_API_KEY ?? '').trim(),
+      model: (env.GROQ_STT_MODEL ?? 'whisper-large-v3-turbo').trim(),
+      language: (env.STT_LANGUAGE ?? 'ko').trim(),
+      timeoutMs: Number(env.STT_TIMEOUT_MS ?? 60_000),
+    },
     dataDir: DATA_DIR,
   };
 }
