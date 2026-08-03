@@ -90,6 +90,60 @@ describe('Queue.remove — 삭제가 아니라 아카이브', () => {
   });
 });
 
+describe('Queue.discard — /clear · /drop', () => {
+  test('지정한 id 만 빼고 나머지는 남긴다', async () => {
+    for (const id of [1, 2, 3]) await queue.append(fragment(id));
+
+    const removed = await queue.discard([1, 3]);
+    assert.deepEqual(removed.map((f) => f.id), [1, 3]);
+    assert.deepEqual((await queue.readAll()).map((f) => f.id), [2]);
+  });
+
+  test('버린 조각도 아카이브에 남는다 — 유실되지 않는다', async () => {
+    await queue.append(fragment(1, '실수로 버린 원문'));
+    await queue.discard([1]);
+
+    const archive = await fs.readFile(path.join(dir, 'archive', 'discarded.jsonl'), 'utf8');
+    assert.match(archive, /실수로 버린 원문/);
+    assert.match(archive, /discardedAt/, '언제 버렸는지도 남는다');
+  });
+
+  test('정리를 마친 조각과 파일이 섞이지 않는다', async () => {
+    await queue.append(fragment(1, '노션에 들어간 것'));
+    await queue.append(fragment(2, '내가 버린 것'));
+
+    await queue.remove([1], { retroDate: '2026-07-26' });
+    await queue.discard([2]);
+
+    const saved = await fs.readFile(path.join(dir, 'archive', '2026-07-26.jsonl'), 'utf8');
+    const discarded = await fs.readFile(path.join(dir, 'archive', 'discarded.jsonl'), 'utf8');
+    assert.match(saved, /노션에 들어간 것/);
+    assert.doesNotMatch(saved, /내가 버린 것/);
+    assert.match(discarded, /내가 버린 것/);
+    assert.doesNotMatch(discarded, /노션에 들어간 것/);
+  });
+
+  test('없는 id 를 버려도 큐를 건드리지 않는다', async () => {
+    await queue.append(fragment(1));
+    const removed = await queue.discard([42]);
+    assert.deepEqual(removed, []);
+    assert.deepEqual((await queue.readAll()).map((f) => f.id), [1]);
+  });
+
+  test('스냅샷 이후 들어온 조각은 남는다', async () => {
+    await queue.append(fragment(1));
+    await queue.append(fragment(2));
+    const snapshot = (await queue.readAll()).map((f) => f.id);
+
+    // /clear 확인 버튼을 누르기 전에 새 생각이 떠올랐다.
+    await queue.append(fragment(99, '방금 들어온 조각'));
+
+    await queue.discard(snapshot);
+    const remaining = await queue.readAll();
+    assert.deepEqual(remaining.map((f) => f.id), [99]);
+  });
+});
+
 describe('Queue.restore — /undo', () => {
   test('되돌린 조각이 큐에 다시 들어온다', async () => {
     await queue.append(fragment(1));

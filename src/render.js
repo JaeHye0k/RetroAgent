@@ -105,15 +105,38 @@ export function retryKeyboard(token) {
   };
 }
 
-/** 원문 조각 목록 */
-export function renderFragments(fragments, { title = '📄 <b>원문 조각</b>' } = {}) {
+/**
+ * 원문 조각 목록.
+ *
+ * startIndex 는 날짜별로 나눠 보낼 때 번호를 이어 붙이기 위한 것이다. /drop 이
+ * 이 번호를 그대로 받으므로, 날짜 그룹마다 1번부터 다시 세면 번호가 겹쳐버린다.
+ */
+export function renderFragments(fragments, { title = '📄 <b>원문 조각</b>', startIndex = 0 } = {}) {
   if (!fragments.length) return '쌓인 조각이 없습니다.';
   const lines = [title, ''];
   fragments.forEach((fragment, index) => {
     const time = new Date(fragment.ts).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
-    lines.push(`<b>${index + 1}.</b> <i>${escapeHtml(time)}</i>`);
+    lines.push(`<b>${startIndex + index + 1}.</b> <i>${escapeHtml(time)}</i>`);
     lines.push(escapeHtml(fragment.text));
     lines.push('');
   });
   return lines.join('\n').trimEnd();
+}
+
+/** 긴 조각을 한 줄로 줄여 보여준다. 무엇을 버렸는지 확인시키는 용도. */
+export function excerpt(text, limit = 60) {
+  const oneLine = String(text ?? '').replace(/\s+/g, ' ').trim();
+  return oneLine.length > limit ? `${oneLine.slice(0, limit)}…` : oneLine;
+}
+
+/** /clear 확인 버튼. 되돌릴 수 없는 쪽이 왼쪽에 오지 않도록 취소를 먼저 둔다. */
+export function clearKeyboard(token) {
+  return {
+    inline_keyboard: [
+      [
+        { text: '❌ 그대로 두기', callback_data: `clear_no:${token}` },
+        { text: '🗑 전부 비우기', callback_data: `clear_yes:${token}` },
+      ],
+    ],
+  };
 }
