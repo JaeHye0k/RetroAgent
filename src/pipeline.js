@@ -2,12 +2,26 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { doneBlocks, droppedBlocks, learningBlocks, SECTIONS } from './blocks.js';
 import { pageUrl } from './notion.js';
-import { escapeHtml, previewKeyboard, renderFragments, renderPreview, retryKeyboard } from './render.js';
+import {
+  clearKeyboard,
+  escapeHtml,
+  excerpt,
+  previewKeyboard,
+  renderFragments,
+  renderPreview,
+  retryKeyboard,
+} from './render.js';
 import { dueGroups, groupByRetroDate, humanDate, retroDateOf } from './schedule.js';
 import { JsonStore } from './store.js';
 
 /** digest-state 에 보관할 처리 완료 날짜 개수 상한 */
 const DONE_DATES_LIMIT = 60;
+
+/** 버린 조각 원문이 남는 곳 — 회신에 그대로 적어 되찾을 길을 알려준다. */
+const DISCARD_NOTE = '원문은 <code>data/archive/discarded.jsonl</code> 에 남아 있습니다.';
+
+const DROP_HINT =
+  '🗑 <b>/drop 2</b> 로 조각 하나를, <b>/clear</b> 로 큐 전체를 비웁니다.\n<code>/drop 2 5</code> · <code>/drop 2-4</code> 처럼 여러 개도 됩니다.';
 
 /**
  * 정리 → 미리보기 → 승인 → 저장 상태 머신.
@@ -29,6 +43,9 @@ export class Pipeline {
     this.digestState = new JsonStore(path.join(config.dataDir, 'digest-state.json'), { doneDates: [] });
     this.lastWrite = new JsonStore(path.join(config.dataDir, 'last-write.json'), null);
     this.busy = false;
+    // /clear 확인 대기. 일부러 메모리에만 둔다 — 재시작하면 확인이 만료되는 편이,
+    // 언제 눌렀는지 모를 버튼이 살아남아 큐를 비우는 것보다 낫다.
+    this.pendingClear = null;
   }
 
   say(text, options) {
@@ -160,6 +177,12 @@ export class Pipeline {
 
   async handleCallback(query) {
     const [action, token] = String(query.data ?? '').split(':');
+
+    // /clear 확인은 미리보기와 다른 상태를 쓴다. pending 검사에 걸리기 전에 갈라낸다.
+    if (action === 'clear_yes' || action === 'clear_no') {
+      return this.handleClearCallback(action, token, query);
+    }
+
     const pending = await this.pending.read();
 
     if (!pending || pending.token !== token) {
@@ -304,13 +327,143 @@ export class Pipeline {
     }
 
     // 날짜별로 나눠 보여준다. 어느 날짜가 밀려 있는지가 한눈에 보여야 한다.
-    for (const { retroDate, fragments } of groups) {
-      await this.say(
-        renderFragments(fragments, {
-          title: `📥 <b>${humanDate(retroDate)}</b> — 조각 ${fragments.length}개`,
-        }),
-      );
+    // 번호는 날짜를 가로질러 이어 붙인다 — /drop 이 이 번호를 그대로 받는다.
+    let startIndex = 0;
+    for (const [index, { retroDate, fragments }] of groups.entries()) {
+      const body = renderFragments(fragments, {
+        title: `📥 <b>${humanDate(retroDate)}</b> — 조각 ${fragments.length}개`,
+        startIndex,
+      });
+      const isLast = index === groups.length - 1;
+      await this.say(isLast ? `${body}\n\n${DROP_HINT}` : body);
+      startIndex += fragments.length;
     }
+  }
+
+  /**
+   * 큐를 손대도 되는 때인가.
+   * 정리 중이거나 승인 대기 중에 조각을 빼면, 이미 스냅샷을 뜬 pending 은
+   * 사라진 조각을 그대로 노션에 적어버린다. 그 창을 아예 막는다.
+   */
+  async guardQueueEdit() {
+    if (this.busy) {
+      await this.say('⏳ 지금 정리하고 있습니다. 끝나면 다시 시도해주세요.');
+      return false;
+    }
+    if (await this.pending.read()) {
+      await this.say(
+        '⚠️ 승인하지 않은 정리가 있습니다. 위 미리보기에서 <b>저장</b> 또는 <b>취소</b>를 먼저 눌러주세요.',
+      );
+      return false;
+    }
+    return true;
+  }
+
+  /** /queue 에 보이는 순서 그대로 펼친 목록. /drop 의 번호가 여기서 나온다. */
+  async queueList() {
+    return (await this.queueGroups()).flatMap((group) => group.fragments);
+  }
+
+  /**
+   * /drop 2 5 — /queue 번호로 특정 조각만 뺀다.
+   *
+   * 확인 버튼을 두지 않는다. 대상이 좁고 원문이 아카이브에 남으며, 무엇을
+   * 뺐는지 회신에 그대로 보여주므로 잘못 눌러도 바로 알아챌 수 있다.
+   */
+  async dropFragments(numbers) {
+    if (!(await this.guardQueueEdit())) return;
+
+    const fragments = await this.queueList();
+    if (!fragments.length) {
+      await this.say('📭 쌓인 조각이 없습니다.');
+      return;
+    }
+
+    const picked = [];
+    const missing = [];
+    for (const number of numbers) {
+      const fragment = fragments[number - 1];
+      if (fragment) picked.push({ number, fragment });
+      else missing.push(number);
+    }
+
+    if (!picked.length) {
+      await this.say(
+        `❌ ${missing.join(', ')}번 조각이 없습니다. 지금 큐에는 1~${fragments.length}번이 있습니다.\n/queue 로 번호를 확인해주세요.`,
+      );
+      return;
+    }
+
+    const removed = await this.queue.discard(picked.map((p) => p.fragment.id));
+
+    const lines = [`🗑 조각 ${removed.length}개를 큐에서 뺐습니다.`, ''];
+    for (const { number, fragment } of picked) {
+      lines.push(`<b>${number}.</b> ${escapeHtml(excerpt(fragment.text))}`);
+    }
+    if (missing.length) lines.push('', `⚠️ ${missing.join(', ')}번은 없어서 건너뛰었습니다.`);
+    lines.push('', `📥 큐에 남은 조각 ${fragments.length - removed.length}개`, DISCARD_NOTE);
+    await this.say(lines.join('\n'));
+  }
+
+  /** /clear — 큐 전체를 비운다. 되돌릴 버튼이 없는 일이라 확인을 한 번 받는다. */
+  async confirmClear() {
+    if (!(await this.guardQueueEdit())) return;
+
+    const fragments = await this.queue.readAll();
+    if (!fragments.length) {
+      await this.say('📭 쌓인 조각이 없습니다.');
+      return;
+    }
+
+    // 확인 시점에 큐를 다시 읽지 않고 이 스냅샷만 지운다. 버튼을 누르기까지
+    // 사이에 들어온 새 조각까지 쓸어가면, 본 적 없는 것을 지우는 셈이 된다.
+    const token = crypto.randomUUID().slice(0, 8);
+    this.pendingClear = { token, ids: fragments.map((f) => f.id) };
+
+    await this.say(
+      [
+        `🗑 큐에 쌓인 조각 <b>${fragments.length}개</b>를 전부 비울까요?`,
+        '',
+        `${DISCARD_NOTE} 되찾을 수는 있지만 큐에서는 사라집니다.`,
+      ].join('\n'),
+      { reply_markup: clearKeyboard(token) },
+    );
+  }
+
+  async handleClearCallback(action, token, query) {
+    if (!this.pendingClear || this.pendingClear.token !== token) {
+      await this.telegram.answerCallbackQuery(query.id, {
+        text: '만료된 확인입니다. /clear 를 다시 보내주세요.',
+        show_alert: true,
+      });
+      if (query.message) await this.telegram.clearKeyboard(this.chatId, query.message.message_id);
+      return;
+    }
+
+    const { ids } = this.pendingClear;
+    this.pendingClear = null;
+    if (query.message) await this.telegram.clearKeyboard(this.chatId, query.message.message_id);
+
+    if (action === 'clear_no') {
+      await this.telegram.answerCallbackQuery(query.id, { text: '그대로 뒀습니다.' });
+      await this.say(`🚫 큐를 비우지 않았습니다. 조각 ${ids.length}개 그대로입니다.`);
+      return;
+    }
+
+    // 확인을 누르기까지 사이에 자동 정리가 끼어들었을 수 있다.
+    if (this.busy || (await this.pending.read())) {
+      await this.telegram.answerCallbackQuery(query.id, { text: '지금은 비울 수 없습니다.', show_alert: true });
+      await this.say('⚠️ 그새 정리가 시작됐습니다. 그 건을 처리한 뒤 /clear 를 다시 보내주세요.');
+      return;
+    }
+
+    await this.telegram.answerCallbackQuery(query.id, { text: '큐를 비웠습니다.' });
+    const removed = await this.queue.discard(ids);
+    const left = await this.queue.size();
+
+    const lines = [`🗑 조각 ${removed.length}개를 큐에서 비웠습니다.`, DISCARD_NOTE];
+    if (left) lines.push('', `📥 확인하는 사이에 들어온 조각 ${left}개는 큐에 남겨뒀습니다.`);
+    await this.say(lines.join('\n'));
   }
 
   async undo() {

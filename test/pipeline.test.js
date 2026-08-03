@@ -309,6 +309,257 @@ describe('cancel / raw / 만료', () => {
   });
 });
 
+describe('/drop — 특정 조각 빼기', () => {
+  test('/queue 번호로 지목한 조각만 빠진다', async () => {
+    const pipeline = makePipeline();
+    for (const id of [1, 2, 3]) await queue.append(fragment(id));
+
+    await pipeline.dropFragments([2]);
+
+    assert.deepEqual((await queue.readAll()).map((f) => f.id), [1, 3]);
+    assert.match(telegram.lastText, /조각 1개를 큐에서 뺐습니다/);
+    assert.match(telegram.lastText, /조각 2/, '무엇을 뺐는지 보여준다');
+    assert.match(telegram.lastText, /큐에 남은 조각 2개/);
+  });
+
+  test('여러 번호를 한 번에 뺀다', async () => {
+    const pipeline = makePipeline();
+    for (const id of [1, 2, 3, 4]) await queue.append(fragment(id));
+
+    await pipeline.dropFragments([1, 3, 4]);
+
+    assert.deepEqual((await queue.readAll()).map((f) => f.id), [2]);
+  });
+
+  test('번호는 날짜 그룹을 가로질러 이어진다', async () => {
+    const pipeline = makePipeline();
+    await queue.append(writtenOn(1, '2026-07-27'));
+    await queue.append(writtenOn(2, '2026-07-28'));
+    await queue.append(writtenOn(3, '2026-07-29'));
+
+    // 3번은 마지막 날짜 그룹의 첫 조각이다.
+    await pipeline.dropFragments([3]);
+
+    assert.deepEqual((await queue.readAll()).map((f) => f.id), [1, 2]);
+  });
+
+  test('버린 조각은 아카이브에 남는다', async () => {
+    const pipeline = makePipeline();
+    await queue.append(fragment(1, '되찾고 싶어질 원문'));
+
+    await pipeline.dropFragments([1]);
+
+    const archive = await fs.readFile(path.join(dir, 'archive', 'discarded.jsonl'), 'utf8');
+    assert.match(archive, /되찾고 싶어질 원문/);
+    assert.match(telegram.lastText, /discarded\.jsonl/);
+  });
+
+  test('없는 번호만 지목하면 아무것도 빼지 않는다', async () => {
+    const pipeline = makePipeline();
+    await queue.append(fragment(1));
+
+    await pipeline.dropFragments([7]);
+
+    assert.equal(await queue.size(), 1);
+    assert.match(telegram.lastText, /7번 조각이 없습니다/);
+    assert.match(telegram.lastText, /1~1번/);
+  });
+
+  test('있는 번호와 없는 번호가 섞이면 있는 것만 빼고 알려준다', async () => {
+    const pipeline = makePipeline();
+    for (const id of [1, 2]) await queue.append(fragment(id));
+
+    await pipeline.dropFragments([1, 9]);
+
+    assert.deepEqual((await queue.readAll()).map((f) => f.id), [2]);
+    assert.match(telegram.lastText, /9번은 없어서 건너뛰었습니다/);
+  });
+
+  test('큐가 비어 있으면 그렇다고 말한다', async () => {
+    const pipeline = makePipeline();
+    await pipeline.dropFragments([1]);
+    assert.match(telegram.lastText, /쌓인 조각이 없습니다/);
+  });
+
+  test('승인 대기 중에는 큐를 건드리지 않는다', async () => {
+    const pipeline = makePipeline();
+    await queue.append(fragment(1));
+    await pipeline.runDigest({ trigger: 'manual' });
+
+    await pipeline.dropFragments([1]);
+
+    assert.equal(await queue.size(), 1, 'pending 이 참조하는 조각은 남아야 한다');
+    assert.match(telegram.lastText, /승인하지 않은 정리가 있습니다/);
+  });
+
+  test('정리 중에는 큐를 건드리지 않는다', async () => {
+    const pipeline = makePipeline();
+    await queue.append(fragment(1));
+    pipeline.busy = true;
+
+    await pipeline.dropFragments([1]);
+
+    assert.equal(await queue.size(), 1);
+    assert.match(telegram.lastText, /지금 정리하고 있습니다/);
+  });
+});
+
+describe('/clear — 큐 전체 비우기', () => {
+  test('바로 비우지 않고 확인 버튼을 준다', async () => {
+    const pipeline = makePipeline();
+    for (const id of [1, 2]) await queue.append(fragment(id));
+
+    await pipeline.confirmClear();
+
+    assert.equal(await queue.size(), 2, '확인 전에는 그대로다');
+    assert.match(telegram.lastText, /조각 <b>2개<\/b>를 전부 비울까요/);
+    assert.ok(telegram.sent.at(-1).options.reply_markup, '확인 버튼이 있어야 한다');
+  });
+
+  test('확인을 누르면 비운다', async () => {
+    const pipeline = makePipeline();
+    for (const id of [1, 2, 3]) await queue.append(fragment(id));
+    await pipeline.confirmClear();
+    const { token } = pipeline.pendingClear;
+
+    await pipeline.handleCallback(callback(`clear_yes:${token}`));
+
+    assert.equal(await queue.size(), 0);
+    assert.match(telegram.lastText, /조각 3개를 큐에서 비웠습니다/);
+    assert.equal(pipeline.pendingClear, null);
+
+    const archive = await fs.readFile(path.join(dir, 'archive', 'discarded.jsonl'), 'utf8');
+    assert.equal(archive.trim().split('\n').length, 3, '셋 다 아카이브에 남는다');
+  });
+
+  test('취소하면 큐를 그대로 둔다', async () => {
+    const pipeline = makePipeline();
+    for (const id of [1, 2]) await queue.append(fragment(id));
+    await pipeline.confirmClear();
+    const { token } = pipeline.pendingClear;
+
+    await pipeline.handleCallback(callback(`clear_no:${token}`));
+
+    assert.equal(await queue.size(), 2);
+    assert.match(telegram.lastText, /비우지 않았습니다/);
+    assert.equal(pipeline.pendingClear, null);
+  });
+
+  test('확인하는 사이에 들어온 조각은 살아남는다', async () => {
+    const pipeline = makePipeline();
+    await queue.append(fragment(1));
+    await pipeline.confirmClear();
+    const { token } = pipeline.pendingClear;
+
+    // 버튼을 누르기 전에 새 생각이 떠올랐다.
+    await queue.append(fragment(99, '방금 떠오른 생각'));
+
+    await pipeline.handleCallback(callback(`clear_yes:${token}`));
+
+    const remaining = await queue.readAll();
+    assert.deepEqual(remaining.map((f) => f.id), [99]);
+    assert.match(telegram.lastText, /들어온 조각 1개는 큐에 남겨뒀습니다/);
+  });
+
+  test('같은 버튼을 두 번 눌러도 두 번 비우지 않는다', async () => {
+    const pipeline = makePipeline();
+    await queue.append(fragment(1));
+    await pipeline.confirmClear();
+    const { token } = pipeline.pendingClear;
+
+    await pipeline.handleCallback(callback(`clear_yes:${token}`));
+    await pipeline.handleCallback(callback(`clear_yes:${token}`));
+
+    assert.match(telegram.answers.at(-1).text, /만료된 확인/);
+  });
+
+  test('엉뚱한 토큰은 거부한다', async () => {
+    const pipeline = makePipeline();
+    await queue.append(fragment(1));
+    await pipeline.confirmClear();
+
+    await pipeline.handleCallback(callback('clear_yes:엉뚱한토큰'));
+
+    assert.equal(await queue.size(), 1);
+    assert.match(telegram.answers.at(-1).text, /만료된 확인/);
+  });
+
+  test('확인하는 사이에 정리가 시작되면 비우지 않는다', async () => {
+    const pipeline = makePipeline();
+    await queue.append(fragment(1));
+    await pipeline.confirmClear();
+    const { token } = pipeline.pendingClear;
+
+    // 23:00 이 지나 스케줄러가 미리보기를 띄웠다.
+    await pipeline.runDigest({ trigger: 'manual' });
+
+    await pipeline.handleCallback(callback(`clear_yes:${token}`));
+
+    assert.equal(await queue.size(), 1);
+    assert.match(telegram.lastText, /그새 정리가 시작됐습니다/);
+  });
+
+  test('빈 큐에는 확인을 묻지 않는다', async () => {
+    const pipeline = makePipeline();
+    await pipeline.confirmClear();
+
+    assert.match(telegram.lastText, /쌓인 조각이 없습니다/);
+    assert.equal(pipeline.pendingClear, null);
+  });
+
+  test('승인 대기 중에는 확인조차 묻지 않는다', async () => {
+    const pipeline = makePipeline();
+    await queue.append(fragment(1));
+    await pipeline.runDigest({ trigger: 'manual' });
+
+    await pipeline.confirmClear();
+
+    assert.match(telegram.lastText, /승인하지 않은 정리가 있습니다/);
+    assert.equal(pipeline.pendingClear, null);
+  });
+
+  test('미리보기 버튼과 확인 버튼이 서로를 잡아먹지 않는다', async () => {
+    const pipeline = makePipeline();
+    await queue.append(fragment(1));
+    await pipeline.runDigest({ trigger: 'manual' });
+    const { token } = await pipeline.pending.read();
+
+    // /clear 는 막혔지만, 미리보기 저장은 정상으로 돌아야 한다.
+    await pipeline.confirmClear();
+    await pipeline.handleCallback(callback(`save:${token}`));
+
+    assert.equal(await queue.size(), 0);
+    assert.match(telegram.lastText, /저장했습니다/);
+  });
+});
+
+describe('showQueue — 번호 매기기', () => {
+  test('날짜가 나뉘어도 번호는 1부터 이어진다', async () => {
+    const pipeline = makePipeline();
+    await queue.append(writtenOn(1, '2026-07-27'));
+    await queue.append(writtenOn(2, '2026-07-28'));
+    await queue.append(writtenOn(3, '2026-07-28', 'T15:00:00+09:00'));
+
+    await pipeline.showQueue();
+
+    assert.equal(telegram.sent.length, 2, '날짜별로 나눠 보낸다');
+    assert.match(telegram.sent[0].text, /<b>1\.<\/b>/);
+    assert.match(telegram.sent[1].text, /<b>2\.<\/b>/);
+    assert.match(telegram.sent[1].text, /<b>3\.<\/b>/);
+    assert.doesNotMatch(telegram.sent[1].text, /<b>1\.<\/b>/, '그룹마다 1번부터 다시 세지 않는다');
+  });
+
+  test('마지막 메시지에 /drop 사용법을 붙인다', async () => {
+    const pipeline = makePipeline();
+    await queue.append(fragment(1));
+
+    await pipeline.showQueue();
+
+    assert.match(telegram.lastText, /\/drop 2/);
+    assert.match(telegram.lastText, /\/clear/);
+  });
+});
+
 describe('undo', () => {
   test('블록을 지우고 조각을 큐에 되돌린다', async () => {
     const pipeline = makePipeline();
