@@ -222,7 +222,7 @@
   <p class="sub">텔레그램에 흘려보낸 조각글이 노션 일간 회고가 되기까지 — Telegram · Claude Code · Notion 세 시스템을 잇는 로컬 프로세스의 구조.</p>
   <div class="chips">
     <span class="chip">Node 20+ · 외부 의존성 0</span>
-    <span class="chip">테스트 212개</span>
+    <span class="chip">테스트 326개</span>
     <span class="chip">launchd 상시 실행</span>
   </div>
 </header>
@@ -820,10 +820,12 @@
     <tr><td><code>blocks.js</code></td><td>RetroDraft → 노션 블록 (순수 함수) <em>(blocks.test)</em></td><td>—</td></tr>
     <tr><td><code>render.js</code></td><td>RetroDraft → 텔레그램 미리보기 텍스트 <em>(render.test)</em></td><td>—</td></tr>
     <tr><td><code>schedule.js</code></td><td>날짜 귀속 · 날짜별 묶기 · 발송 시점 판정 <em>(schedule.test)</em></td><td>—</td></tr>
+    <tr><td><code>cycles.js</code></td><td>주기의 단일 출처 — 일간~연간의 범위·제목·경계 판정·재료 선택 <em>(cycles.test)</em></td><td>—</td></tr>
+    <tr><td><code>template.js</code></td><td><code>templates/*.md</code> → 노션 블록 <em>(template.test)</em></td><td>파일시스템</td></tr>
     <tr><td><code>queue.js</code></td><td>조각글 큐 · 아카이브 · 폐기 · 복원 <em>(queue.test)</em></td><td>파일시스템</td></tr>
     <tr><td><code>telegram.js</code></td><td>Bot API 래퍼 · 타임아웃 · 메시지 분할 <em>(telegram.test)</em></td><td>Telegram</td></tr>
     <tr><td><code>config.js</code></td><td>환경변수 검증 · 노션 id 정규화 <em>(config.test)</em></td><td>—</td></tr>
-    <tr><td><code>commands.js</code></td><td><code>/now</code> <code>/queue</code> <code>/drop</code> <code>/clear</code> <code>/status</code> <code>/undo</code> <code>/help</code> 라우팅 · <code>/drop</code> 번호 파싱 <em>(commands.test)</em></td><td>—</td></tr>
+    <tr><td><code>commands.js</code></td><td><code>/now</code> <code>/period</code> <code>/queue</code> <code>/drop</code> <code>/clear</code> <code>/status</code> <code>/undo</code> <code>/help</code> 라우팅 · <code>/drop</code> 번호 파싱 <em>(commands.test)</em></td><td>—</td></tr>
     <tr><td><code>store.js</code></td><td>작은 JSON 상태 파일 · 원자적 쓰기</td><td>파일시스템</td></tr>
   </tbody>
 </table>
@@ -840,6 +842,7 @@
     <tr><td><code>pending.json</code></td><td>승인 대기 중인 draft · 조각 스냅샷 · 부분 저장 진행 상황</td></tr>
     <tr><td><code>offset.json</code></td><td>텔레그램 업데이트 커서 — 같은 메시지를 두 번 처리하지 않기 위해</td></tr>
     <tr><td><code>digest-state.json</code></td><td>자동 발송을 마친 회고 날짜 목록 (최근 60일)</td></tr>
+    <tr><td><code>period-state.json</code></td><td>자동 발송을 마친 주기 회고 목록 · 첫 실행 시작점</td></tr>
     <tr><td><code>last-write.json</code></td><td><code>/undo</code> 대상 블록 id 와 조각 원문</td></tr>
   </tbody>
 </table>
