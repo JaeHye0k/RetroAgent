@@ -37,9 +37,45 @@ export const RETRO_SCHEMA = {
   additionalProperties: false,
 };
 
+/**
+ * 주기 회고(KLPT)용 스키마.
+ *
+ * 일간과 달리 조각글이 아니라 **이미 쓴 회고 페이지들**을 재료로 받는다.
+ * tryReview 는 지난 주기에 적은 Try 가 실제로 실행됐는지에 대한 판단이다.
+ */
+export const PERIOD_SCHEMA = {
+  type: 'object',
+  properties: {
+    period: { type: 'string' },
+    tryReview: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          text: { type: 'string' },
+          done: { type: 'boolean' },
+          note: { type: 'string' },
+        },
+        required: ['text', 'done', 'note'],
+        additionalProperties: false,
+      },
+    },
+    keep: { type: 'array', items: bulletItem },
+    problem: { type: 'array', items: bulletItem },
+    learned: { type: 'array', items: bulletItem },
+    try: { type: 'array', items: bulletItem },
+  },
+  required: ['period', 'tryReview', 'keep', 'problem', 'learned', 'try'],
+  additionalProperties: false,
+};
+
 const SYSTEM_PROMPT =
   '너는 한국어 회고 정리기다. 사용자가 준 조각글을 지정된 JSON 스키마에 맞춰 재구성한다. ' +
   '설명이나 인사말 없이 구조화된 결과만 낸다.';
+
+const PERIOD_SYSTEM_PROMPT =
+  '너는 한국어 회고 정리기다. 사용자가 기간 동안 써 둔 회고들을 읽고 KLPT 형식의 주기 회고로 ' +
+  '간추린다. 설명이나 인사말 없이 구조화된 결과만 낸다.';
 
 export function validateDraft(value) {
   const errors = [];
@@ -80,6 +116,34 @@ export function fallbackDraft({ fragments, dateString }) {
   };
 }
 
+export function validatePeriodDraft(value) {
+  const errors = [];
+  const isBullet = (item) =>
+    item &&
+    typeof item.text === 'string' &&
+    Array.isArray(item.sub) &&
+    item.sub.every((s) => typeof s === 'string');
+
+  if (!value || typeof value !== 'object') return ['최상위가 객체가 아닙니다'];
+  if (typeof value.period !== 'string') errors.push('period 가 문자열이 아닙니다');
+
+  if (!Array.isArray(value.tryReview)) errors.push('tryReview 가 배열이 아닙니다');
+  else {
+    value.tryReview.forEach((item, i) => {
+      if (typeof item?.text !== 'string') errors.push(`tryReview[${i}].text 타입 오류`);
+      if (typeof item?.done !== 'boolean') errors.push(`tryReview[${i}].done 이 boolean 이 아닙니다`);
+      if (typeof item?.note !== 'string') errors.push(`tryReview[${i}].note 타입 오류`);
+    });
+  }
+
+  for (const key of ['keep', 'problem', 'learned', 'try']) {
+    if (!Array.isArray(value[key])) errors.push(`${key} 가 배열이 아닙니다`);
+    else if (!value[key].every(isBullet)) errors.push(`${key} 항목 형식 오류`);
+  }
+
+  return errors;
+}
+
 export function buildUserPrompt({ fragments, dateString, existingText, extraInstruction }) {
   const parts = [`## 회고 날짜\n${dateString}`];
 
@@ -99,6 +163,25 @@ export function buildUserPrompt({ fragments, dateString, existingText, extraInst
   if (extraInstruction?.trim()) {
     parts.push(`## 추가 지시\n${extraInstruction.trim()}`);
   }
+
+  return parts.join('\n\n');
+}
+
+/** 주기 회고 프롬프트. 재료는 조각글이 아니라 이미 써 둔 회고 페이지들이다. */
+export function buildPeriodPrompt({ title, cycleName, range, sources, previousTry }) {
+  const parts = [`## 이번 회고\n${title} (${cycleName} · ${range.start} ~ ${range.end})`];
+
+  parts.push(
+    `## 재료 — 이 기간에 쓴 회고 ${sources.length}개\n` +
+      sources.map((s) => `### ${s.title}\n${s.text.trim() || '(내용 없음)'}`).join('\n\n'),
+  );
+
+  parts.push(
+    previousTry?.trim()
+      ? `## 지난 ${cycleName} 회고의 Try\n${previousTry.trim()}\n\n` +
+          '각 항목이 위 재료에서 실제로 실행됐는지 판단해 tryReview 에 넣어라.'
+      : `## 지난 ${cycleName} 회고의 Try\n없다 (이번이 첫 ${cycleName} 회고다). tryReview 는 빈 배열로 둔다.`,
+  );
 
   return parts.join('\n\n');
 }
@@ -138,6 +221,7 @@ export class Composer {
     model = 'sonnet',
     timeoutMs = 240_000,
     promptPath = path.join(PROMPTS_DIR, 'compose.md'),
+    periodPromptPath = path.join(PROMPTS_DIR, 'compose-period.md'),
     runner = spawnClaude,
     cwd = ROOT,
   } = {}) {
@@ -145,22 +229,26 @@ export class Composer {
     this.model = model;
     this.timeoutMs = timeoutMs;
     this.promptPath = promptPath;
+    this.periodPromptPath = periodPromptPath;
     this.runner = runner;
     this.cwd = cwd;
+    this.instructionsCache = new Map();
   }
 
-  async #instructions() {
-    this.instructionsCache ??= await fs.readFile(this.promptPath, 'utf8');
-    return this.instructionsCache;
+  async #instructions(file) {
+    if (!this.instructionsCache.has(file)) {
+      this.instructionsCache.set(file, await fs.readFile(file, 'utf8'));
+    }
+    return this.instructionsCache.get(file);
   }
 
   /** 한 번 호출하고 결과를 검증한다. 검증 실패 시 errors 를 채워 돌려준다. */
-  async #attempt(userPrompt) {
+  async #attempt(userPrompt, { schema, systemPrompt, validate }) {
     const args = [
       '--print',
       '--output-format', 'json',
-      '--json-schema', JSON.stringify(RETRO_SCHEMA),
-      '--system-prompt', SYSTEM_PROMPT,
+      '--json-schema', JSON.stringify(schema),
+      '--system-prompt', systemPrompt,
       '--model', this.model,
       // 회고 정리는 순수 텍스트 변환이다. 도구도, 사용자 설정도 끼어들 이유가 없다.
       '--tools', '',
@@ -200,20 +288,17 @@ export class Composer {
       }
     }
 
-    const errors = validateDraft(draft);
+    const errors = validate(draft);
     return errors.length ? { errors, draft } : { draft };
   }
 
   /**
-   * 조각글 → RetroDraft.
-   * 한 번 실패하면 형식을 지적해 재시도하고, 그래도 안 되면 원문을 통째로
-   * 넘기는 폴백을 돌려준다. 어떤 경로로도 조각글은 사라지지 않는다.
+   * 형식이 맞을 때까지 두 번 시도한다. 두 번째에는 무엇이 틀렸는지 알려준다.
+   * @returns 성공하면 `{ draft }`, 끝내 실패하면 `{ errors }`
    */
-  async compose({ fragments, dateString, existingText, extraInstruction }) {
-    const instructions = await this.#instructions();
-    const base = buildUserPrompt({ fragments, dateString, existingText, extraInstruction });
-
+  async #runWithRetry(prompt, options, label) {
     let lastErrors = [];
+
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const retryNote =
         attempt === 0
@@ -221,21 +306,60 @@ export class Composer {
           : `\n\n## 직전 시도가 형식 검증에 실패했다\n${lastErrors.join('\n')}\n스키마를 정확히 지켜 다시 출력하라.`;
 
       try {
-        const { draft, errors } = await this.#attempt(`${instructions}\n\n---\n\n${base}${retryNote}`);
-        if (draft && !errors?.length) {
-          return { draft: { ...draft, date: dateString }, ok: true };
-        }
+        const { draft, errors } = await this.#attempt(`${prompt}${retryNote}`, options);
+        if (draft && !errors?.length) return { draft };
         lastErrors = errors ?? ['알 수 없는 실패'];
       } catch (error) {
         lastErrors = [error.message];
       }
-      console.error(`[compose] ${attempt + 1}차 시도 실패:`, lastErrors.join(' / '));
+      console.error(`[${label}] ${attempt + 1}차 시도 실패:`, lastErrors.join(' / '));
     }
+
+    return { errors: lastErrors };
+  }
+
+  /**
+   * 조각글 → RetroDraft.
+   * 끝내 실패하면 원문을 통째로 넘기는 폴백을 돌려준다.
+   * 어떤 경로로도 조각글은 사라지지 않는다.
+   */
+  async compose({ fragments, dateString, existingText, extraInstruction }) {
+    const instructions = await this.#instructions(this.promptPath);
+    const base = buildUserPrompt({ fragments, dateString, existingText, extraInstruction });
+
+    const { draft, errors } = await this.#runWithRetry(
+      `${instructions}\n\n---\n\n${base}`,
+      { schema: RETRO_SCHEMA, systemPrompt: SYSTEM_PROMPT, validate: validateDraft },
+      'compose',
+    );
+
+    if (draft) return { draft: { ...draft, date: dateString }, ok: true };
 
     return {
       draft: fallbackDraft({ fragments, dateString }),
       ok: false,
-      reason: `자동 정리에 실패했습니다 (${lastErrors[0] ?? '원인 불명'}). 원문 그대로 넣습니다.`,
+      reason: `자동 정리에 실패했습니다 (${errors[0] ?? '원인 불명'}). 원문 그대로 넣습니다.`,
     };
+  }
+
+  /**
+   * 이미 쓴 회고들 → 주기 회고(KLPT) 초안.
+   *
+   * 일간과 달리 **폴백이 없다**. 일간은 실패하면 조각글이 유실될 수 있어 원문을
+   * 통째로라도 넣어야 하지만, 주기 회고의 재료는 이미 노션에 영구히 있다.
+   * 억지로 빈 페이지를 만드는 것보다 실패했다고 말하는 편이 낫다.
+   */
+  async composePeriod({ title, cycleName, range, sources, previousTry }) {
+    const instructions = await this.#instructions(this.periodPromptPath);
+    const base = buildPeriodPrompt({ title, cycleName, range, sources, previousTry });
+
+    const { draft, errors } = await this.#runWithRetry(
+      `${instructions}\n\n---\n\n${base}`,
+      { schema: PERIOD_SCHEMA, systemPrompt: PERIOD_SYSTEM_PROMPT, validate: validatePeriodDraft },
+      'compose-period',
+    );
+
+    if (draft) return { draft: { ...draft, period: title }, ok: true };
+    return { ok: false, reason: `주기 회고 정리에 실패했습니다 (${errors[0] ?? '원인 불명'}).` };
   }
 }

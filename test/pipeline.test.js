@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test, { afterEach, beforeEach, describe } from 'node:test';
-import { SECTIONS } from '../src/blocks.js';
+import { DAILY_SECTIONS, duePeriods } from '../src/cycles.js';
 import { Pipeline } from '../src/pipeline.js';
 import { Queue } from '../src/queue.js';
 
@@ -44,21 +44,35 @@ class FakeTelegram {
 }
 
 class FakeNotion {
-  constructor({ failOnSection = null } = {}) {
+  constructor({ failOnSection = null, pagesInRange = [], previousPage = null, texts = {} } = {}) {
     this.calls = [];
     this.failOnSection = failOnSection;
     this.counter = 0;
     this.deleted = [];
+    this.pagesInRange = pagesInRange;
+    this.previousPage = previousPage;
+    this.texts = texts;
   }
   async findDailyPage() {
     return null;
   }
-  async pageText() {
-    return '';
+  async pageText(pageId) {
+    return this.texts[pageId] ?? '';
   }
-  async findOrCreateDailyPage(dateString) {
-    this.calls.push({ op: 'findOrCreate', dateString });
+  async findOrCreatePage(dateString, cycle) {
+    this.calls.push({ op: 'findOrCreate', dateString, cycle });
     return { page: { id: 'page1', url: 'https://notion.so/page1' }, created: true };
+  }
+  findOrCreateDailyPage(dateString) {
+    return this.findOrCreatePage(dateString, 'daily');
+  }
+  async listPagesInRange({ start, end }) {
+    this.calls.push({ op: 'listRange', start, end });
+    return this.pagesInRange;
+  }
+  async findPreviousPage(cycle, beforeDate) {
+    this.calls.push({ op: 'findPrevious', cycle, beforeDate });
+    return this.previousPage;
   }
   async appendToSection(pageId, title, blocks) {
     if (!blocks.length) return [];
@@ -75,8 +89,18 @@ class FakeNotion {
   }
 }
 
-const fakeComposer = (result = { draft: DRAFT, ok: true }) => ({
+const PERIOD_DRAFT = {
+  period: '2026.09.28 – 10.04 주간 회고',
+  tryReview: [{ text: '결제 로그 심기', done: true, note: '4단계 전부 넣었다' }],
+  keep: [{ text: '매일 물 5잔', sub: [] }],
+  problem: [{ text: '저녁 집중력이 떨어진다', sub: [] }],
+  learned: [{ text: 'staleTime 과 gcTime 은 다르다', sub: [] }],
+  try: [{ text: '저녁엔 타이머 25분으로 쪼개기', sub: [] }],
+};
+
+const fakeComposer = (result = { draft: DRAFT, ok: true }, periodResult = { draft: PERIOD_DRAFT, ok: true }) => ({
   compose: async () => result,
+  composePeriod: async () => periodResult,
 });
 
 const fragment = (id, text = `조각 ${id}`, ts = '2026-07-26T14:00:00+09:00') => ({
@@ -106,6 +130,7 @@ function makePipeline({ composer = fakeComposer(), notionImpl } = {}) {
       telegram: { chatId: CHAT_ID },
       dataDir: dir,
       digestTime: { hour: 23, minute: 0 },
+      periodicTime: { hour: 23, minute: 0 },
       cutoffHour: 4,
     },
     telegram,
@@ -193,7 +218,7 @@ describe('save', () => {
 
     await pipeline.handleCallback(callback(`save:${token}`));
 
-    assert.deepEqual(notion.appendedSections, [SECTIONS.done.title, SECTIONS.learnings.title]);
+    assert.deepEqual(notion.appendedSections, [DAILY_SECTIONS.done, DAILY_SECTIONS.learnings]);
     assert.equal(await queue.size(), 0);
     assert.equal(await pipeline.pending.read(), null);
 
@@ -220,7 +245,7 @@ describe('save', () => {
   });
 
   test('저장이 실패하면 큐와 pending 을 그대로 두고 재시도 버튼을 준다', async () => {
-    const pipeline = makePipeline({ notionImpl: new FakeNotion({ failOnSection: SECTIONS.done.title }) });
+    const pipeline = makePipeline({ notionImpl: new FakeNotion({ failOnSection: DAILY_SECTIONS.done }) });
     await queue.append(fragment(1));
     await pipeline.runDigest({ trigger: 'manual' });
     const { token } = await pipeline.pending.read();
@@ -234,14 +259,14 @@ describe('save', () => {
   });
 
   test('두 번째 섹션에서 실패한 뒤 재시도하면 첫 섹션을 중복 삽입하지 않는다', async () => {
-    const flaky = new FakeNotion({ failOnSection: SECTIONS.learnings.title });
+    const flaky = new FakeNotion({ failOnSection: DAILY_SECTIONS.learnings });
     const pipeline = makePipeline({ notionImpl: flaky });
     await queue.append(fragment(1));
     await pipeline.runDigest({ trigger: 'manual' });
     const { token } = await pipeline.pending.read();
 
     await pipeline.handleCallback(callback(`save:${token}`));
-    assert.deepEqual(flaky.appendedSections, [SECTIONS.done.title, SECTIONS.learnings.title]);
+    assert.deepEqual(flaky.appendedSections, [DAILY_SECTIONS.done, DAILY_SECTIONS.learnings]);
 
     const afterFailure = await pipeline.pending.read();
     assert.equal(afterFailure.progress.done, true);
@@ -251,7 +276,7 @@ describe('save', () => {
     flaky.failOnSection = null;
     await pipeline.handleCallback(callback(`save:${token}`));
 
-    const doneAppends = flaky.appendedSections.filter((t) => t === SECTIONS.done.title);
+    const doneAppends = flaky.appendedSections.filter((t) => t === DAILY_SECTIONS.done);
     assert.equal(doneAppends.length, 1, '오늘 한 일 섹션은 한 번만 삽입돼야 한다');
     assert.equal(await queue.size(), 0);
     assert.equal(await pipeline.pending.read(), null);
@@ -273,7 +298,7 @@ describe('cancel / raw / 만료', () => {
   });
 
   test('부분 저장 후 취소하면 이미 들어간 블록을 알려준다', async () => {
-    const pipeline = makePipeline({ notionImpl: new FakeNotion({ failOnSection: SECTIONS.learnings.title }) });
+    const pipeline = makePipeline({ notionImpl: new FakeNotion({ failOnSection: DAILY_SECTIONS.learnings }) });
     await queue.append(fragment(1));
     await pipeline.runDigest({ trigger: 'manual' });
     const { token } = await pipeline.pending.read();
@@ -557,6 +582,234 @@ describe('showQueue — 번호 매기기', () => {
 
     assert.match(telegram.lastText, /\/drop 2/);
     assert.match(telegram.lastText, /\/clear/);
+  });
+});
+
+describe('주기 회고', () => {
+  const SUNDAY = '2026-10-04';
+  /** 그 주 일간 페이지들 */
+  const weekPages = () =>
+    ['2026-09-28', '2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02', '2026-10-03', SUNDAY].map(
+      (date) => ({ id: `p-${date}`, date, cycle: 'daily', title: `${date} 일간 회고` }),
+    );
+
+  /** 일요일 밤 — 주간 회고가 나갈 때 */
+  const atSundayNight = (pipeline) => {
+    pipeline.now = () => new Date(2026, 9, 4, 23, 5);
+    return pipeline;
+  };
+
+  /**
+   * `now` 직전까지의 주기를 모두 처리한 것으로 표시한다.
+   * 쭉 돌고 있던 에이전트의 상태 — 밀린 것 없이 새 주기만 기다리는 중.
+   */
+  const caughtUpAt = async (pipeline, now) => {
+    const past = duePeriods({ now, periodicTime: { hour: 23, minute: 0 }, cutoffHour: 4, donePeriods: [] });
+    await pipeline.periodState.write({ seeded: true, donePeriods: past.map((p) => p.key) });
+    return pipeline;
+  };
+
+  /** 일요일 발송 시각 직전까지 따라잡은 상태 */
+  const alreadySeeded = (pipeline) => caughtUpAt(pipeline, new Date(2026, 9, 4, 22, 0));
+
+  test('첫 실행에는 과거 주기를 쏟아내지 않는다', async () => {
+    const pipeline = atSundayNight(makePipeline({ notionImpl: new FakeNotion({ pagesInRange: weekPages() }) }));
+
+    assert.equal(await pipeline.maybePeriodicDigest(), false);
+    assert.equal(telegram.sent.length, 0, '아무것도 보내지 않는다');
+
+    const state = await pipeline.periodState.read();
+    assert.equal(state.seeded, true);
+    assert.ok(state.donePeriods.length > 0, '지난 주기들을 처리한 것으로 표시한다');
+  });
+
+  test('씨를 뿌린 뒤 돌아오는 주기부터 정리한다', async () => {
+    const pipeline = atSundayNight(makePipeline({ notionImpl: new FakeNotion({ pagesInRange: weekPages() }) }));
+    await alreadySeeded(pipeline);
+
+    assert.equal(await pipeline.maybePeriodicDigest(), true);
+
+    const pending = await pipeline.pending.read();
+    assert.equal(pending.kind, 'period');
+    assert.equal(pending.cycle, 'weekly');
+    assert.equal(pending.retroDate, SUNDAY, '날짜 속성은 기간의 마지막 날');
+    assert.equal(pending.title, '2026.09.28 – 10.04 주간 회고');
+    assert.ok(telegram.sent.at(-1).options.reply_markup, '승인 버튼이 붙는다');
+  });
+
+  test('미리보기에 KLPT 섹션이 보인다', async () => {
+    const pipeline = atSundayNight(makePipeline({ notionImpl: new FakeNotion({ pagesInRange: weekPages() }) }));
+    await alreadySeeded(pipeline);
+
+    await pipeline.maybePeriodicDigest();
+
+    const preview = telegram.lastText;
+    for (const section of ['지난 주기 Try 점검', 'Keep', 'Problem', 'Learned', 'Try']) {
+      assert.match(preview, new RegExp(section), `${section} 이 보여야 한다`);
+    }
+    assert.match(preview, /☑/, '실행된 Try 는 체크 표시로 보인다');
+  });
+
+  test('승인하면 다섯 섹션에 넣고 큐는 건드리지 않는다', async () => {
+    const pipeline = atSundayNight(makePipeline({ notionImpl: new FakeNotion({ pagesInRange: weekPages() }) }));
+    await alreadySeeded(pipeline);
+    // 주기 회고와 무관한 조각이 큐에 있다.
+    await queue.append(fragment(1));
+
+    await pipeline.maybePeriodicDigest();
+    const { token } = await pipeline.pending.read();
+    await pipeline.handleCallback(callback(`save:${token}`));
+
+    assert.deepEqual(notion.appendedSections, ['지난 주기 Try 점검', 'Keep', 'Problem', 'Learned', 'Try']);
+    assert.equal(await queue.size(), 1, '조각글은 주기 회고와 상관이 없다');
+    assert.equal(await pipeline.pending.read(), null);
+    assert.match(telegram.lastText, /주간 회고/);
+
+    const created = notion.calls.find((c) => c.op === 'findOrCreate');
+    assert.equal(created.cycle, 'weekly');
+    assert.equal(created.dateString, SUNDAY);
+  });
+
+  test('지난 같은 주기의 Try 를 읽어 넘긴다', async () => {
+    const previousPage = { id: 'prev' };
+    const notionImpl = new FakeNotion({
+      pagesInRange: weekPages(),
+      previousPage,
+      texts: { prev: '## Keep\n- 좋았던 것\n\n## Try\n- [ ] 결제 로그 심기\n- [x] 물 마시기\n\n## 끝' },
+    });
+    const pipeline = atSundayNight(makePipeline({ notionImpl }));
+    await alreadySeeded(pipeline);
+
+    let seen;
+    pipeline.composer.composePeriod = async (args) => {
+      seen = args;
+      return { draft: PERIOD_DRAFT, ok: true };
+    };
+
+    await pipeline.maybePeriodicDigest();
+
+    assert.equal(seen.previousTry, '- [ ] 결제 로그 심기\n- [x] 물 마시기', 'Try 섹션만 잘라 넘긴다');
+    assert.equal(seen.sources.length, 7);
+    assert.equal(seen.cycleName, '주간');
+    assert.deepEqual(seen.range, { start: '2026-09-28', end: SUNDAY });
+
+    const lookup = notion.calls.find((c) => c.op === 'findPrevious');
+    assert.deepEqual(lookup, { op: 'findPrevious', cycle: 'weekly', beforeDate: SUNDAY });
+  });
+
+  test('재료가 없으면 빈 페이지를 만들지 않는다', async () => {
+    const pipeline = atSundayNight(makePipeline({ notionImpl: new FakeNotion({ pagesInRange: [] }) }));
+    await alreadySeeded(pipeline);
+
+    await pipeline.maybePeriodicDigest();
+
+    assert.equal(await pipeline.pending.read(), null);
+    assert.match(telegram.lastText, /쌓인 회고가 없습니다/);
+    assert.equal(notion.calls.filter((c) => c.op === 'findOrCreate').length, 0);
+  });
+
+  test('정리에 실패해도 빈 페이지를 만들지 않는다', async () => {
+    const pipeline = atSundayNight(
+      makePipeline({
+        notionImpl: new FakeNotion({ pagesInRange: weekPages() }),
+        composer: fakeComposer(undefined, { ok: false, reason: 'claude 폭발' }),
+      }),
+    );
+    await alreadySeeded(pipeline);
+
+    await pipeline.maybePeriodicDigest();
+
+    assert.equal(await pipeline.pending.read(), null);
+    assert.match(telegram.lastText, /claude 폭발/);
+    assert.equal(notion.calls.filter((c) => c.op === 'findOrCreate').length, 0);
+  });
+
+  test('한 번 보여준 주기는 취소해도 다시 들이밀지 않는다', async () => {
+    const pipeline = atSundayNight(makePipeline({ notionImpl: new FakeNotion({ pagesInRange: weekPages() }) }));
+    await alreadySeeded(pipeline);
+
+    await pipeline.maybePeriodicDigest();
+    const { token } = await pipeline.pending.read();
+    await pipeline.handleCallback(callback(`cancel:${token}`));
+
+    assert.equal(await pipeline.maybePeriodicDigest(), false);
+  });
+
+  test('승인 대기 중에는 돌지 않는다', async () => {
+    const pipeline = atSundayNight(makePipeline({ notionImpl: new FakeNotion({ pagesInRange: weekPages() }) }));
+    await alreadySeeded(pipeline);
+    await queue.append(fragment(1));
+    await pipeline.runDigest();
+
+    assert.equal(await pipeline.maybePeriodicDigest(), false);
+  });
+
+  test('기간의 조각이 아직 큐에 있으면 미리보기에 알린다', async () => {
+    const pipeline = atSundayNight(makePipeline({ notionImpl: new FakeNotion({ pagesInRange: weekPages() }) }));
+    await alreadySeeded(pipeline);
+    await queue.append(writtenOn(1, '2026-10-02'));
+
+    await pipeline.maybePeriodicDigest();
+
+    assert.match(telegram.lastText, /아직 큐에 있습니다/);
+    assert.match(telegram.lastText, /2026-10-02/);
+  });
+
+  test('/period 는 발송 이력을 무시하고 가장 최근 주기를 정리한다', async () => {
+    const pipeline = makePipeline({ notionImpl: new FakeNotion({ pagesInRange: weekPages() }) });
+    // 수요일 — 아직 주기 끝이 아니다. 가장 최근에 끝난 주기는 지난 일요일이다.
+    pipeline.now = () => new Date(2026, 9, 7, 12, 0);
+
+    await pipeline.runPeriod();
+
+    const pending = await pipeline.pending.read();
+    assert.equal(pending.cycle, 'weekly');
+    assert.equal(pending.retroDate, SUNDAY);
+  });
+});
+
+describe('tick — 일간이 먼저다', () => {
+  const sundayPages = [{ id: 'p1', date: '2026-10-04', cycle: 'daily', title: '일간' }];
+
+  /** 그 시점까지 밀린 것 없이 따라잡은 상태로 만든다. */
+  const caughtUp = async (pipeline, now) => {
+    const past = duePeriods({ now, periodicTime: { hour: 23, minute: 0 }, cutoffHour: 4, donePeriods: [] });
+    await pipeline.periodState.write({ seeded: true, donePeriods: past.map((p) => p.key) });
+  };
+
+  test('일간이 밀려 있으면 주기 회고는 기다린다', async () => {
+    const pipeline = makePipeline({ notionImpl: new FakeNotion({ pagesInRange: sundayPages }) });
+    pipeline.now = () => new Date(2026, 9, 4, 23, 5);
+    await caughtUp(pipeline, new Date(2026, 9, 4, 22, 0));
+    await queue.append(writtenOn(1, '2026-10-04'));
+
+    assert.equal(await pipeline.tick(), true);
+
+    const pending = await pipeline.pending.read();
+    assert.notEqual(pending.kind, 'period', '일간이 먼저 나와야 한다');
+    assert.equal(pending.retroDate, '2026-10-04');
+  });
+
+  test('일간을 저장하면 다음 틱에 주기 회고가 이어진다', async () => {
+    const pipeline = makePipeline({ notionImpl: new FakeNotion({ pagesInRange: sundayPages }) });
+    pipeline.now = () => new Date(2026, 9, 4, 23, 5);
+    await caughtUp(pipeline, new Date(2026, 9, 4, 22, 0));
+    await queue.append(writtenOn(1, '2026-10-04'));
+
+    await pipeline.tick();
+    const { token } = await pipeline.pending.read();
+    await pipeline.handleCallback(callback(`save:${token}`));
+
+    assert.equal(await pipeline.tick(), true);
+    assert.equal((await pipeline.pending.read()).kind, 'period');
+  });
+
+  test('할 일이 없으면 false', async () => {
+    const pipeline = makePipeline();
+    pipeline.now = () => new Date(2026, 9, 7, 12, 0);
+    await caughtUp(pipeline, new Date(2026, 9, 7, 12, 0));
+
+    assert.equal(await pipeline.tick(), false);
   });
 });
 

@@ -30,11 +30,6 @@ export class Transcriber {
     this.endpoint = endpoint;
   }
 
-  /** 키가 없으면 음성 처리를 아예 시작하지 않도록 호출부에서 먼저 확인한다. */
-  get enabled() {
-    return Boolean(this.apiKey);
-  }
-
   /**
    * 오디오 바이트를 텍스트로 바꾼다.
    * 텔레그램 voice 는 ogg/opus 라 재인코딩 없이 그대로 보낸다. 다만 Groq 는 파일 확장자로

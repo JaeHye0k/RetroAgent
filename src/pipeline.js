@@ -1,13 +1,31 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
-import { doneBlocks, droppedBlocks, learningBlocks, SECTIONS } from './blocks.js';
-import { pageUrl } from './notion.js';
+import {
+  bulletBlocks,
+  doneBlocks,
+  droppedBlocks,
+  learningBlocks,
+  tryBlocks,
+  tryReviewBlocks,
+} from './blocks.js';
+import {
+  addDays,
+  coveragePlan,
+  CYCLES,
+  DAILY,
+  DAILY_SECTIONS,
+  duePeriods,
+  PERIOD_SECTIONS,
+  periodEndingOn,
+} from './cycles.js';
+import { pageUrl, sectionText } from './notion.js';
 import {
   clearKeyboard,
   escapeHtml,
   excerpt,
   previewKeyboard,
   renderFragments,
+  renderPeriodPreview,
   renderPreview,
   retryKeyboard,
 } from './render.js';
@@ -23,8 +41,37 @@ const DISCARD_NOTE = '원문은 <code>data/archive/discarded.jsonl</code> 에 �
 const DROP_HINT =
   '🗑 <b>/drop 2</b> 로 조각 하나를, <b>/clear</b> 로 큐 전체를 비웁니다.\n<code>/drop 2 5</code> · <code>/drop 2-4</code> 처럼 여러 개도 됩니다.';
 
+/** period-state 에 보관할 처리 완료 주기 개수 상한 */
+const DONE_PERIODS_LIMIT = 60;
+
+/** 일간 저장 단계 — 섹션 하나가 한 단계다. */
+function dailySteps(draft) {
+  return [
+    {
+      key: 'done',
+      title: DAILY_SECTIONS.done,
+      blocks: [...doneBlocks(draft.done), ...droppedBlocks(draft.dropped)],
+    },
+    { key: 'learnings', title: DAILY_SECTIONS.learnings, blocks: learningBlocks(draft.learnings) },
+  ];
+}
+
+/** 주기 저장 단계 — KLPT 다섯 섹션을 템플릿 순서대로. */
+function periodSteps(draft) {
+  return [
+    { key: 'tryReview', title: PERIOD_SECTIONS.tryReview, blocks: tryReviewBlocks(draft.tryReview) },
+    { key: 'keep', title: PERIOD_SECTIONS.keep, blocks: bulletBlocks(draft.keep) },
+    { key: 'problem', title: PERIOD_SECTIONS.problem, blocks: bulletBlocks(draft.problem) },
+    { key: 'learned', title: PERIOD_SECTIONS.learned, blocks: bulletBlocks(draft.learned) },
+    { key: 'try', title: PERIOD_SECTIONS.try, blocks: tryBlocks(draft.try) },
+  ];
+}
+
 /**
  * 정리 → 미리보기 → 승인 → 저장 상태 머신.
+ *
+ * 일간(조각글 → 회고)과 주기(이미 쓴 회고들 → 더 높은 층위의 회고)가 같은
+ * 미리보기·승인 흐름을 쓴다. pending.kind 로 갈린다.
  *
  * 불변 조건: 노션 저장이 성공하기 전까지 큐에서 조각을 빼지 않는다.
  * 어느 단계에서 실패하든 다시 /now 를 누르면 그대로 재시도할 수 있어야 한다.
@@ -41,6 +88,10 @@ export class Pipeline {
     this.chatId = config.telegram.chatId;
     this.pending = new JsonStore(path.join(config.dataDir, 'pending.json'), null);
     this.digestState = new JsonStore(path.join(config.dataDir, 'digest-state.json'), { doneDates: [] });
+    this.periodState = new JsonStore(path.join(config.dataDir, 'period-state.json'), {
+      seeded: false,
+      donePeriods: [],
+    });
     this.lastWrite = new JsonStore(path.join(config.dataDir, 'last-write.json'), null);
     this.busy = false;
     // /clear 확인 대기. 일부러 메모리에만 둔다 — 재시작하면 확인이 만료되는 편이,
@@ -93,6 +144,194 @@ export class Pipeline {
 
     await this.runDigestFor(due[0], { trigger: 'schedule', remaining: due.length - 1 });
     return true;
+  }
+
+  /**
+   * 스케줄러가 30초마다 부른다.
+   *
+   * 일간을 먼저 돌린다. 주기 회고는 노션에 저장된 일간 페이지를 읽으므로,
+   * 그 기간 마지막 날의 일간이 먼저 저장돼 있어야 재료가 온전하다.
+   */
+  async tick() {
+    if (await this.maybeRunDigest()) return true;
+    return this.maybePeriodicDigest();
+  }
+
+  /** 이 주기는 이미 보여줬다고 기록한다. */
+  async markPeriodDone(key) {
+    const { donePeriods = [] } = await this.periodState.read();
+    const next = [...new Set([...donePeriods, key])].slice(-DONE_PERIODS_LIMIT);
+    await this.periodState.write({ donePeriods: next });
+  }
+
+  /**
+   * 밀린 주기 목록. 첫 실행이면 과거를 전부 처리한 것으로 표시하고 넘어간다.
+   *
+   * 이 씨 뿌리기가 없으면, 설치하자마자 지난 45일치 주기 회고가 한꺼번에
+   * 쏟아진다. 에이전트를 켜기 전의 기간까지 회고해 달라고 한 적은 없다.
+   */
+  async pendingPeriods() {
+    const state = await this.periodState.read();
+    const args = {
+      now: this.now(),
+      periodicTime: this.config.periodicTime,
+      cutoffHour: this.config.cutoffHour,
+    };
+
+    if (!state.seeded) {
+      const past = duePeriods({ ...args, donePeriods: [] });
+      await this.periodState.write({
+        seeded: true,
+        donePeriods: past.map((period) => period.key).slice(-DONE_PERIODS_LIMIT),
+      });
+      this.log.log?.(`[pipeline] 주기 회고 시작점을 잡았습니다 — 지난 ${past.length}개는 건너뜁니다.`);
+      return [];
+    }
+
+    return duePeriods({ ...args, donePeriods: state.donePeriods ?? [] });
+  }
+
+  /** 정리할 때가 된 주기 하나를 처리한다. 일간과 같은 게이트를 쓴다. */
+  async maybePeriodicDigest() {
+    if (this.busy) return false;
+    if (await this.pending.read()) return false;
+
+    const due = await this.pendingPeriods();
+    if (!due.length) return false;
+
+    await this.runPeriodFor(due[0], { trigger: 'schedule', remaining: due.length - 1 });
+    return true;
+  }
+
+  /**
+   * /period — 가장 최근에 끝난 주기를 지금 정리한다.
+   * 발송 시각과 처리 이력을 무시한다. /now 의 주기 버전이다.
+   */
+  async runPeriod() {
+    if (this.busy) {
+      await this.say('⏳ 이미 정리하고 있습니다. 잠시만요.');
+      return;
+    }
+    if (await this.pending.read()) {
+      await this.say(
+        '⚠️ 아직 승인하지 않은 정리가 있습니다. 위 미리보기에서 <b>저장</b> 또는 <b>취소</b>를 먼저 눌러주세요.',
+      );
+      return;
+    }
+
+    // 오늘부터 거슬러 올라가며 가장 가까운 주기 끝을 찾는다.
+    const today = this.currentRetroDate();
+    let period = null;
+    for (let back = 0; back < 400 && !period; back += 1) {
+      period = periodEndingOn(addDays(today, -back));
+    }
+    if (!period) {
+      await this.say('정리할 주기를 찾지 못했습니다.');
+      return;
+    }
+
+    await this.runPeriodFor(period, { trigger: 'manual' });
+  }
+
+  /**
+   * 한 주기 몫을 간추려 미리보기를 보낸다.
+   *
+   * 재료는 조각글 큐가 아니라 **그 기간에 이미 쓴 회고 페이지들**이다.
+   * 굵은 주기 페이지가 있으면 그것을 먼저 쓰고, 빈 구간만 잘게 메운다.
+   */
+  async runPeriodFor(period, { trigger, remaining = 0 }) {
+    const { cycle, start, end, title, key } = period;
+    const cycleName = CYCLES[cycle].name;
+
+    this.busy = true;
+    try {
+      const backlog = remaining
+        ? `\n(다른 주기 ${remaining}건이 더 밀려 있습니다. 이 건을 처리하면 이어서 보냅니다.)`
+        : '';
+      await this.say(`🧭 <b>${escapeHtml(title)}</b> 를 간추리고 있습니다…${backlog}`);
+
+      const pages = await this.notion.listPagesInRange({ start, end });
+      const chosen = coveragePlan({ cycle, range: { start, end }, pages });
+
+      if (!chosen.length) {
+        await this.say(
+          `📭 ${escapeHtml(title)} — 그 기간(${start} ~ ${end})에 쌓인 회고가 없습니다. 만들지 않았습니다.`,
+        );
+        if (trigger === 'schedule') await this.markPeriodDone(key);
+        return;
+      }
+
+      const sources = [];
+      for (const page of chosen) {
+        sources.push({ title: page.title || page.date, text: await this.notion.pageText(page.id) });
+      }
+
+      // 지난 같은 주기 회고의 Try — 이것이 '지난 주기 Try 점검' 의 재료다.
+      let previousTry = '';
+      try {
+        const previous = await this.notion.findPreviousPage(cycle, end);
+        if (previous) {
+          previousTry = sectionText(await this.notion.pageText(previous.id), PERIOD_SECTIONS.try);
+        }
+      } catch (error) {
+        this.log.error('[pipeline] 지난 주기 Try 조회 실패(무시):', error.message);
+      }
+
+      const { draft, ok, reason } = await this.composer.composePeriod({
+        title,
+        cycleName,
+        range: { start, end },
+        sources,
+        previousTry,
+      });
+
+      // 일간과 달리 폴백이 없다. 재료는 이미 노션에 있으니 빈 페이지를 만들지 않는다.
+      if (!ok) {
+        await this.say(`❌ ${escapeHtml(reason)}\n\n재료는 노션에 그대로 있습니다. /period 로 다시 시도해주세요.`);
+        if (trigger === 'schedule') await this.markPeriodDone(key);
+        return;
+      }
+
+      const token = crypto.randomUUID().slice(0, 8);
+      const note = await this.unsettledNote({ start, end });
+      const text = renderPeriodPreview(draft, { title, sourceCount: sources.length, note });
+      const message = await this.say(text, { reply_markup: previewKeyboard(token) });
+
+      await this.pending.write({
+        kind: 'period',
+        token,
+        cycle,
+        title,
+        range: { start, end },
+        // 주기 회고 페이지의 '날짜' 속성에는 기간의 마지막 날이 들어간다.
+        retroDate: end,
+        draft,
+        fragments: [],
+        sourceCount: sources.length,
+        previewMessageId: message?.message_id ?? null,
+        composedOk: true,
+      });
+
+      await this.markPeriodDone(key);
+    } catch (error) {
+      this.log.error('[pipeline] 주기 정리 실패:', error);
+      await this.say(
+        `❌ ${escapeHtml(title)} 를 간추리지 못했습니다.\n<code>${escapeHtml(error.message)}</code>\n\n/period 로 다시 시도해주세요.`,
+      );
+      if (trigger === 'schedule') await this.markPeriodDone(key);
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  /** 기간 안의 날짜가 아직 큐에 남아 있으면 알려준다. 막지는 않는다. */
+  async unsettledNote({ start, end }) {
+    const groups = await this.queueGroups();
+    const stuck = groups.filter((group) => group.retroDate >= start && group.retroDate <= end);
+    if (!stuck.length) return undefined;
+
+    const total = stuck.reduce((sum, group) => sum + group.fragments.length, 0);
+    return `이 기간의 조각 ${total}개가 아직 큐에 있습니다 (${stuck.map((g) => g.retroDate).join(', ')}). 재료에 반영되지 않았습니다.`;
   }
 
   /**
@@ -215,43 +454,50 @@ export class Pipeline {
     await this.telegram.answerCallbackQuery(query.id, { text: '노션에 저장 중…' });
     await this.telegram.clearKeyboard(this.chatId, query.message.message_id);
 
+    const isPeriod = pending.kind === 'period';
+
     try {
       const { draft, retroDate, fragments } = pending;
-      const { page, created } = await this.notion.findOrCreateDailyPage(retroDate);
+      const cycle = pending.cycle ?? DAILY;
+      const { page, created } = await this.notion.findOrCreatePage(retroDate, cycle);
 
       // 섹션 단위로 진행 상황을 남긴다. 두 번째 섹션에서 실패해 재시도할 때
       // 첫 번째 섹션이 다시 삽입되면 페이지에 같은 내용이 두 번 들어간다.
-      const progress = pending.progress ?? { blockIds: [], done: false, learnings: false };
-      const steps = [
-        { key: 'done', title: SECTIONS.done.title, blocks: [...doneBlocks(draft.done), ...droppedBlocks(draft.dropped)] },
-        { key: 'learnings', title: SECTIONS.learnings.title, blocks: learningBlocks(draft.learnings) },
-      ];
+      const steps = isPeriod ? periodSteps(draft) : dailySteps(draft);
+      const progress =
+        pending.progress ?? { blockIds: [], ...Object.fromEntries(steps.map((s) => [s.key, false])) };
 
       for (const step of steps) {
         if (progress[step.key]) continue;
         // 각 호출이 페이지 블록을 다시 읽는다. 앞선 삽입이 다음 기준점을 흔들기 때문이다.
-        progress.blockIds.push(...(await this.notion.appendToSection(page.id, step.title, step.blocks)));
+        progress.blockIds.push(
+          ...(await this.notion.appendToSection(page.id, step.title, step.blocks, { cycle })),
+        );
         progress[step.key] = true;
         await this.pending.write({ ...pending, progress });
       }
 
       const blockIds = progress.blockIds;
       await this.lastWrite.write({ pageId: page.id, url: pageUrl(page), blockIds, retroDate, fragments });
-      await this.queue.remove(fragments.map((f) => f.id), { retroDate });
+      // 주기 회고에는 조각글이 없다. 큐를 건드릴 일이 없다.
+      if (!isPeriod) await this.queue.remove(fragments.map((f) => f.id), { retroDate });
       await this.pending.clear();
 
+      const label = isPeriod ? pending.title : `${humanDate(retroDate)} 일간 회고`;
       const lines = [
-        `✅ <a href="${pageUrl(page)}">${humanDate(retroDate)} 일간 회고</a>에 저장했습니다.`,
+        `✅ <a href="${pageUrl(page)}">${escapeHtml(label)}</a>에 저장했습니다.`,
         `${created ? '페이지를 새로 만들었습니다.' : '기존 페이지에 이어 붙였습니다.'} 블록 ${blockIds.length}개 추가.`,
       ];
 
-      // 남은 조각을 날짜별로 알려준다. 밀린 날짜가 있으면 그게 다음 차례다.
-      const rest = await this.queueGroups();
-      if (rest.length) {
-        lines.push(
-          '',
-          `📥 큐에 남은 조각: ${rest.map((g) => `${humanDate(g.retroDate)} ${g.fragments.length}개`).join(', ')}`,
-        );
+      if (!isPeriod) {
+        // 남은 조각을 날짜별로 알려준다. 밀린 날짜가 있으면 그게 다음 차례다.
+        const rest = await this.queueGroups();
+        if (rest.length) {
+          lines.push(
+            '',
+            `📥 큐에 남은 조각: ${rest.map((g) => `${humanDate(g.retroDate)} ${g.fragments.length}개`).join(', ')}`,
+          );
+        }
       }
       lines.push('\n되돌리려면 /undo');
       await this.say(lines.join('\n'));
@@ -262,7 +508,9 @@ export class Pipeline {
           '❌ 노션 저장에 실패했습니다.',
           `<code>${escapeHtml(error.message)}</code>`,
           '',
-          '조각은 큐에 그대로 있습니다. 아래 버튼으로 다시 시도할 수 있습니다.',
+          isPeriod
+            ? '재료는 노션에 그대로 있습니다. 아래 버튼으로 다시 시도할 수 있습니다.'
+            : '조각은 큐에 그대로 있습니다. 아래 버튼으로 다시 시도할 수 있습니다.',
         ].join('\n'),
         { reply_markup: retryKeyboard(pending.token) },
       );

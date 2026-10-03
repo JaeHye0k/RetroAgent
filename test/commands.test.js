@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test, { describe } from 'node:test';
-import { handleCommand, parseSelection } from '../src/commands.js';
+import { handleCommand, nextPeriodAfter, parseSelection } from '../src/commands.js';
 
 describe('parseSelection', () => {
   test('숫자 하나', () => {
@@ -61,6 +61,16 @@ function fakePipeline() {
     async confirmClear() {
       calls.push(['confirmClear']);
     },
+    async runPeriod() {
+      calls.push(['runPeriod']);
+    },
+    async queueGroups() {
+      return [];
+    },
+    currentRetroDate() {
+      return '2026-10-01';
+    },
+    pending: { async read() { return null; } },
     async undo() {
       calls.push(['undo']);
     },
@@ -71,7 +81,7 @@ function fakePipeline() {
   };
 }
 
-const config = { digestTime: { hour: 23, minute: 0 } };
+const config = { digestTime: { hour: 23, minute: 0 }, periodicTime: { hour: 23, minute: 0 } };
 
 describe('handleCommand — /drop', () => {
   test('번호를 파싱해 dropFragments 로 넘긴다', async () => {
@@ -132,5 +142,38 @@ describe('handleCommand — 기존 명령', () => {
     const pipeline = fakePipeline();
     assert.equal(await handleCommand('/ 그냥 슬래시', { pipeline, config }), false);
     assert.deepEqual(pipeline.calls, []);
+  });
+});
+
+describe('nextPeriodAfter', () => {
+  test('목요일 다음은 그 주 일요일', () => {
+    assert.equal(nextPeriodAfter('2026-10-01').end, '2026-10-04');
+  });
+
+  test('오늘이 주기 끝이면 오늘', () => {
+    assert.equal(nextPeriodAfter('2026-10-04').end, '2026-10-04');
+  });
+
+  test('12월 말에는 연간이 잡힌다', () => {
+    const next = nextPeriodAfter('2026-12-29');
+    assert.equal(next.cycle, 'yearly');
+    assert.equal(next.title, '2026 연간 회고');
+  });
+});
+
+describe('handleCommand — /period', () => {
+  test('주기 회고 정리로 넘긴다', async () => {
+    const pipeline = fakePipeline();
+    assert.equal(await handleCommand('/period', { pipeline, config }), true);
+    assert.deepEqual(pipeline.calls, [['runPeriod']]);
+  });
+});
+
+describe('handleCommand — /status', () => {
+  test('다음 주기 회고 예정일을 알려준다', async () => {
+    const pipeline = fakePipeline();
+    await handleCommand('/status', { pipeline, config });
+    assert.match(pipeline.said[0], /다음 주기 회고/);
+    assert.match(pipeline.said[0], /2026-10-04/);
   });
 });

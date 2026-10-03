@@ -10,10 +10,11 @@ import {
   heading2,
   learningBlocks,
   richText,
-  scaffold,
-  SECTIONS,
   TEXT_LIMIT,
+  todo,
 } from '../src/blocks.js';
+import { DAILY_SECTIONS } from '../src/cycles.js';
+import { loadTemplate } from '../src/template.js';
 
 describe('richText', () => {
   test('빈 문자열은 빈 배열', () => {
@@ -105,15 +106,40 @@ describe('droppedBlocks — 분류 실패해도 원문은 남는다', () => {
   });
 });
 
-describe('scaffold', () => {
-  test('두 섹션의 헤딩·가이드·구분선을 만든다', () => {
-    const blocks = scaffold();
+describe('todo — 체크박스 항목', () => {
+  test('기본은 체크되지 않은 상태', () => {
+    const block = todo('타이머 써보기');
+    assert.equal(block.type, 'to_do');
+    assert.equal(block.to_do.checked, false);
+    assert.equal(block.to_do.rich_text[0].text.content, '타이머 써보기');
+    assert.ok(!block.to_do.children);
+  });
+
+  test('체크 상태와 부연을 담는다', () => {
+    const block = todo('로그 심기', { checked: true, sub: ['결제 4단계에 전부 넣었다'] });
+    assert.equal(block.to_do.checked, true);
+    assert.equal(block.to_do.children.length, 1);
+    assert.equal(block.to_do.children[0].type, 'bulleted_list_item');
+  });
+
+  test('빈 부연은 버린다', () => {
+    assert.ok(!todo('항목', { sub: ['', '   '] }).to_do.children);
+  });
+});
+
+/**
+ * 템플릿이 코드 밖으로 나갔다. 일간 페이지의 생김새가 예전 scaffold() 와
+ * 똑같이 유지되는지가 이 변경의 회귀 가드다.
+ */
+describe('일간 템플릿', () => {
+  test('두 섹션의 헤딩·가이드·구분선을 만든다', async () => {
+    const { blocks } = await loadTemplate('daily');
     assert.deepEqual(
       blocks.map((b) => b.type),
       ['heading_2', 'quote', 'divider', 'heading_2', 'quote'],
     );
-    assert.equal(headingText(blocks[0]), SECTIONS.done.title);
-    assert.equal(headingText(blocks[3]), SECTIONS.learnings.title);
+    assert.equal(headingText(blocks[0]), DAILY_SECTIONS.done);
+    assert.equal(headingText(blocks[3]), DAILY_SECTIONS.learnings);
     assert.equal(blocks[0].heading_2.rich_text[0].annotations.color, 'purple');
     assert.equal(blocks[3].heading_2.rich_text[0].annotations.color, 'green');
     assert.equal(blocks[1].quote.color, 'gray');

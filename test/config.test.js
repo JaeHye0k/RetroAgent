@@ -2,11 +2,30 @@ import assert from 'node:assert/strict';
 import test, { describe } from 'node:test';
 import { ConfigError, loadConfig, normalizeNotionId, parseTimeOfDay } from '../src/config.js';
 
+/** 전부 필수다 — .env.example 을 그대로 옮긴 모양. */
 const VALID = {
   TELEGRAM_BOT_TOKEN: '123:abc',
   TELEGRAM_CHAT_ID: '987654321',
   NOTION_TOKEN: 'ntn_xxx',
   NOTION_DB_ID: '11111111-2222-3333-4444-555555555555',
+  DIGEST_TIME: '23:00',
+  PERIODIC_DIGEST_TIME: '23:00',
+  DAY_CUTOFF_HOUR: '4',
+  TZ: 'Asia/Seoul',
+  CLAUDE_BIN: 'claude',
+  CLAUDE_MODEL: 'sonnet',
+  COMPOSE_TIMEOUT_MS: '240000',
+  GROQ_API_KEY: 'gsk_xxx',
+  GROQ_STT_MODEL: 'whisper-large-v3-turbo',
+  STT_LANGUAGE: 'ko',
+  STT_TIMEOUT_MS: '60000',
+};
+
+/** VALID 에서 키 하나를 뺀 환경 */
+const without = (key) => {
+  const env = { ...VALID };
+  delete env[key];
+  return env;
 };
 
 describe('parseTimeOfDay', () => {
@@ -80,11 +99,24 @@ describe('loadConfig', () => {
     assert.throws(() => loadConfig({ ...VALID, NOTION_TOKEN: '   ' }), /NOTION_TOKEN/);
   });
 
-  test('선택 값을 덮어쓸 수 있다', () => {
-    const config = loadConfig({ ...VALID, DIGEST_TIME: '22:30', DAY_CUTOFF_HOUR: '0', CLAUDE_MODEL: 'opus' });
+  test('값을 바꾸면 그대로 반영된다', () => {
+    const config = loadConfig({
+      ...VALID,
+      DIGEST_TIME: '22:30',
+      PERIODIC_DIGEST_TIME: '09:00',
+      DAY_CUTOFF_HOUR: '0',
+      CLAUDE_MODEL: 'opus',
+      GROQ_API_KEY: '  gsk_abc  ',
+      STT_LANGUAGE: 'en',
+      STT_TIMEOUT_MS: '30000',
+    });
     assert.deepEqual(config.digestTime, { hour: 22, minute: 30 });
+    assert.deepEqual(config.periodicTime, { hour: 9, minute: 0 });
     assert.equal(config.cutoffHour, 0);
     assert.equal(config.claude.model, 'opus');
+    assert.equal(config.groq.apiKey, 'gsk_abc');
+    assert.equal(config.groq.language, 'en');
+    assert.equal(config.groq.timeoutMs, 30_000);
   });
 
   test('DAY_CUTOFF_HOUR 범위를 벗어나면 거부한다', () => {
@@ -93,25 +125,30 @@ describe('loadConfig', () => {
     assert.throws(() => loadConfig({ ...VALID, DAY_CUTOFF_HOUR: '넷' }), /DAY_CUTOFF_HOUR/);
   });
 
-  test('GROQ_API_KEY 는 선택값 — 없어도 설정을 만든다', () => {
-    const config = loadConfig({ ...VALID });
-    assert.equal(config.groq.apiKey, '');
-    assert.equal(config.groq.model, 'whisper-large-v3-turbo');
-    assert.equal(config.groq.language, 'ko');
-    assert.equal(config.groq.timeoutMs, 60_000);
+  /**
+   * 기본값을 숨겨두지 않기로 했다. 예전에는 빠진 값을 조용히 메웠지만,
+   * 이제는 무엇이 없는지 말하고 멈춘다.
+   */
+  describe('기본값 없음 — 빠지면 전부 에러', () => {
+    for (const key of Object.keys(VALID)) {
+      test(`${key} 가 없으면 거부한다`, () => {
+        assert.throws(() => loadConfig(without(key)), new RegExp(key));
+      });
+    }
   });
 
-  test('GROQ_API_KEY 와 STT 설정을 덮어쓸 수 있다', () => {
-    const config = loadConfig({
-      ...VALID,
-      GROQ_API_KEY: '  gsk_abc  ',
-      GROQ_STT_MODEL: 'whisper-large-v3',
-      STT_LANGUAGE: 'en',
-      STT_TIMEOUT_MS: '30000',
-    });
-    assert.equal(config.groq.apiKey, 'gsk_abc');
-    assert.equal(config.groq.model, 'whisper-large-v3');
-    assert.equal(config.groq.language, 'en');
-    assert.equal(config.groq.timeoutMs, 30_000);
+  test('시간 형식이 틀리면 어느 변수인지 알려준다', () => {
+    assert.throws(() => loadConfig({ ...VALID, PERIODIC_DIGEST_TIME: '25:00' }), /PERIODIC_DIGEST_TIME/);
+  });
+
+  test('숫자 값이 숫자가 아니면 조용히 NaN 으로 넘어가지 않는다', () => {
+    assert.throws(() => loadConfig({ ...VALID, COMPOSE_TIMEOUT_MS: 'abc' }), /COMPOSE_TIMEOUT_MS/);
+    assert.throws(() => loadConfig({ ...VALID, STT_TIMEOUT_MS: '0' }), /STT_TIMEOUT_MS/);
+    assert.throws(() => loadConfig({ ...VALID, STT_TIMEOUT_MS: '-5' }), /STT_TIMEOUT_MS/);
+  });
+
+  test('TZ 가 올바른 시간대가 아니면 거부한다', () => {
+    assert.throws(() => loadConfig({ ...VALID, TZ: 'Asia/없는도시' }), /TZ/);
+    assert.equal(loadConfig({ ...VALID, TZ: 'UTC' }).timeZone, 'UTC');
   });
 });

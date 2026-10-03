@@ -1,12 +1,20 @@
-import { guideQuote, heading2, headingText, scaffold, SECTIONS } from './blocks.js';
-import { pageTitleFor } from './schedule.js';
+import { heading2, headingText } from './blocks.js';
+import { CYCLES, cycleByName, DAILY, rangeOf, titleFor } from './cycles.js';
+import { loadTemplate, scaffoldFor, sectionBlocks } from './template.js';
 
 const API = 'https://api.notion.com/v1';
 const NOTION_VERSION = '2022-06-28';
 
 /** 회고 DB 의 속성 이름 */
 export const PROPS = { title: '이름', date: '날짜', cycle: '주기' };
-export const DAILY_CYCLE = '일간';
+export const DAILY_CYCLE = CYCLES[DAILY].name;
+
+/** 노션 페이지 속성에서 제목 문자열을 뽑는다. */
+function titleOf(page) {
+  return (page?.properties?.[PROPS.title]?.title ?? [])
+    .map((rt) => rt.plain_text ?? rt.text?.content ?? '')
+    .join('');
+}
 
 export class NotionError extends Error {
   constructor(message, { status, code, path } = {}) {
@@ -85,36 +93,101 @@ export class Notion {
     return this.request('GET', `/databases/${this.dbId}`);
   }
 
-  /** 해당 날짜의 '일간' 회고 페이지를 찾는다. 없으면 null. */
-  async findDailyPage(dateString) {
+  /**
+   * 그 날짜에 끝나는 해당 주기의 회고 페이지를 찾는다. 없으면 null.
+   *
+   * '날짜' 속성에는 언제나 기간의 **마지막 날** 하나만 넣는다. 주간·월간도
+   * 마찬가지다. 기간의 시작은 주기만 알면 되살릴 수 있으므로(cycles.rangeOf),
+   * 날짜 범위를 쓰는 것보다 조회가 단순하고 확실하다.
+   */
+  async findPage(dateString, cycle = DAILY) {
     const result = await this.request('POST', `/databases/${this.dbId}/query`, {
       page_size: 5,
       filter: {
         and: [
           { property: PROPS.date, date: { equals: dateString } },
-          { property: PROPS.cycle, select: { equals: DAILY_CYCLE } },
+          { property: PROPS.cycle, select: { equals: CYCLES[cycle].name } },
         ],
       },
     });
     return result.results?.[0] ?? null;
   }
 
-  async createDailyPage(dateString) {
+  async createPage(dateString, cycle = DAILY) {
     return this.request('POST', '/pages', {
       parent: { database_id: this.dbId },
       properties: {
-        [PROPS.title]: { title: [{ type: 'text', text: { content: pageTitleFor(dateString) } }] },
+        [PROPS.title]: {
+          title: [{ type: 'text', text: { content: titleFor(cycle, rangeOf(cycle, dateString)) } }],
+        },
         [PROPS.date]: { date: { start: dateString } },
-        [PROPS.cycle]: { select: { name: DAILY_CYCLE } },
+        // 노션 select 는 없는 이름을 쓰면 옵션을 자동으로 만들어준다.
+        [PROPS.cycle]: { select: { name: CYCLES[cycle].name } },
       },
-      children: scaffold(),
+      children: await scaffoldFor(cycle),
     });
   }
 
-  async findOrCreateDailyPage(dateString) {
-    const existing = await this.findDailyPage(dateString);
+  async findOrCreatePage(dateString, cycle = DAILY) {
+    const existing = await this.findPage(dateString, cycle);
     if (existing) return { page: existing, created: false };
-    return { page: await this.createDailyPage(dateString), created: true };
+    return { page: await this.createPage(dateString, cycle), created: true };
+  }
+
+  findDailyPage(dateString) {
+    return this.findPage(dateString, DAILY);
+  }
+
+  findOrCreateDailyPage(dateString) {
+    return this.findOrCreatePage(dateString, DAILY);
+  }
+
+  /**
+   * 기간 안에 있는 회고 페이지를 전부 가져온다. 주기 회고의 재료를 모으는 데 쓴다.
+   * 주기를 알아볼 수 없는 페이지는 건너뛴다 — 손으로 만든 페이지가 섞여 있을 수 있다.
+   */
+  async listPagesInRange({ start, end }) {
+    const pages = [];
+    let cursor;
+
+    do {
+      const result = await this.request('POST', `/databases/${this.dbId}/query`, {
+        page_size: 100,
+        ...(cursor ? { start_cursor: cursor } : {}),
+        filter: {
+          and: [
+            { property: PROPS.date, date: { on_or_after: start } },
+            { property: PROPS.date, date: { on_or_before: end } },
+          ],
+        },
+        sorts: [{ property: PROPS.date, direction: 'ascending' }],
+      });
+
+      for (const page of result.results ?? []) {
+        const date = page.properties?.[PROPS.date]?.date?.start;
+        const cycle = cycleByName(page.properties?.[PROPS.cycle]?.select?.name);
+        if (date && cycle) pages.push({ id: page.id, url: pageUrl(page), date, cycle, title: titleOf(page) });
+      }
+
+      cursor = result.has_more ? result.next_cursor : undefined;
+    } while (cursor);
+
+    return pages;
+  }
+
+  /** 같은 주기의 직전 회고 페이지. '지난 주기 Try 점검' 이 여기서 나온다. */
+  async findPreviousPage(cycle, beforeDate) {
+    const result = await this.request('POST', `/databases/${this.dbId}/query`, {
+      page_size: 1,
+      filter: {
+        and: [
+          { property: PROPS.cycle, select: { equals: CYCLES[cycle].name } },
+          { property: PROPS.date, date: { before: beforeDate } },
+        ],
+      },
+      sorts: [{ property: PROPS.date, direction: 'descending' }],
+    });
+    return result.results?.[0] ?? null;
   }
 
   async listChildren(blockId) {
@@ -143,17 +216,16 @@ export class Notion {
    * 지정한 섹션 헤딩 아래, 그 섹션의 마지막 위치에 블록을 끼워넣는다.
    * 섹션 헤딩이 없으면 페이지 끝에 헤딩과 함께 추가한다.
    */
-  async appendToSection(pageId, sectionTitle, children, { topLevelBlocks } = {}) {
+  async appendToSection(pageId, sectionTitle, children, { topLevelBlocks, cycle = DAILY } = {}) {
     if (!children.length) return [];
 
     const blocks = topLevelBlocks ?? (await this.listChildren(pageId));
     const headingIndex = blocks.findIndex((block) => headingText(block) === sectionTitle);
 
     if (headingIndex === -1) {
-      const section = Object.values(SECTIONS).find((s) => s.title === sectionTitle);
-      const preamble = section
-        ? [heading2(section.title, section.color), guideQuote(section.guide)]
-        : [heading2(sectionTitle, 'default')];
+      // 섹션이 통째로 없는 페이지다. 템플릿에서 헤딩과 가이드를 가져와 함께 만든다.
+      const preamble =
+        sectionBlocks(await loadTemplate(cycle), sectionTitle) ?? [heading2(sectionTitle, 'default')];
       return this.appendChildren(pageId, [...preamble, ...children]);
     }
 
@@ -196,12 +268,31 @@ export class Notion {
         if (!text) return '';
         if (block.type === 'heading_2') return `## ${text}`;
         if (block.type === 'bulleted_list_item') return `- ${text}`;
+        // 체크 상태까지 적는다. 다음 주기 회고가 Try 의 실행 여부를 여기서 읽는다.
+        if (block.type === 'to_do') return `- [${body.checked ? 'x' : ' '}] ${text}`;
         if (block.type === 'quote') return `> ${text}`;
         return text;
       })
       .filter(Boolean)
       .join('\n');
   }
+}
+
+/**
+ * pageText 결과에서 한 섹션만 잘라낸다.
+ * '## 제목' 부터 다음 '## ' 직전까지. 구분선은 버린다.
+ */
+export function sectionText(text, title) {
+  const lines = String(text ?? '').split('\n');
+  const start = lines.findIndex((line) => line.trim() === `## ${title}`);
+  if (start === -1) return '';
+
+  const rest = lines.slice(start + 1);
+  const end = rest.findIndex((line) => line.startsWith('## '));
+  return (end === -1 ? rest : rest.slice(0, end))
+    .filter((line) => line.trim() !== '---')
+    .join('\n')
+    .trim();
 }
 
 /** 노션 페이지 id → 웹 URL */

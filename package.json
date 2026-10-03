@@ -11,6 +11,7 @@
     "start": "node --env-file=.env src/index.js",
     "test": "node --test \"test/*.test.js\"",
     "dry-run": "node --env-file=.env scripts/dry-run.js",
+    "dry-run-period": "node --env-file=.env scripts/dry-run-period.js",
     "whoami": "node --env-file=.env scripts/whoami.js",
     "install-agent": "bash scripts/install-launchd.sh",
     "uninstall-agent": "bash scripts/uninstall-launchd.sh"
