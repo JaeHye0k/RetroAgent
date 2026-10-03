@@ -1,4 +1,4 @@
-import { DAILY_SECTIONS } from './cycles.js';
+import { DAILY_SECTIONS, PERIOD_SECTIONS } from './cycles.js';
 import { humanDate } from './schedule.js';
 
 /** 텔레그램 메시지 1건 최대 길이 */
@@ -74,6 +74,44 @@ export function renderPreview(draft, { fragmentCount, note } = {}) {
 
   if (!doneGroups.length && !learnings.length && !dropped.length) {
     lines.push('', '(정리된 내용이 없습니다)');
+  }
+
+  return lines.join('\n');
+}
+
+/** `{ text, sub }` 목록을 불릿 줄로. 미리보기의 모든 섹션이 같은 모양을 쓴다. */
+function previewItems(items, lines) {
+  for (const item of items) {
+    lines.push(`  • ${escapeHtml(item.text)}`);
+    for (const sub of item.sub ?? []) lines.push(`      ↳ ${escapeHtml(sub)}`);
+  }
+}
+
+/** 주기 회고(KLPT) 미리보기 */
+export function renderPeriodPreview(draft, { title, sourceCount, note } = {}) {
+  const lines = [`🧭 <b>${escapeHtml(title ?? draft.period)}</b>`];
+  lines.push(`<i>회고 ${sourceCount ?? 0}개를 간추렸습니다</i>`);
+  if (note) lines.push('', `⚠️ ${escapeHtml(note)}`);
+
+  const review = (draft.tryReview ?? []).filter((item) => String(item?.text ?? '').trim());
+  if (review.length) {
+    const done = review.filter((item) => item.done).length;
+    lines.push('', `━━ <b>${escapeHtml(PERIOD_SECTIONS.tryReview)}</b> (${done}/${review.length})`);
+    for (const item of review) {
+      lines.push(`  ${item.done ? '☑' : '☐'} ${escapeHtml(item.text)}`);
+      if (String(item.note ?? '').trim()) lines.push(`      ↳ ${escapeHtml(item.note.trim())}`);
+    }
+  }
+
+  for (const key of ['keep', 'problem', 'learned', 'try']) {
+    const items = (draft[key] ?? []).filter((item) => String(item?.text ?? '').trim());
+    if (!items.length) continue;
+    lines.push('', `━━ <b>${escapeHtml(PERIOD_SECTIONS[key])}</b>`);
+    previewItems(items, lines);
+  }
+
+  if (!review.length && !['keep', 'problem', 'learned', 'try'].some((k) => (draft[k] ?? []).length)) {
+    lines.push('', '(간추린 내용이 없습니다)');
   }
 
   return lines.join('\n');

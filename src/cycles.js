@@ -12,7 +12,7 @@
 import { atLocalTime, pageTitleFor, retroDateOf, toDateString } from './schedule.js';
 
 /** 주기 회고가 공유하는 KLPT 섹션 — 스키마 키 → 템플릿의 섹션 제목 */
-const KLPT = {
+export const PERIOD_SECTIONS = {
   tryReview: '지난 주기 Try 점검',
   keep: 'Keep',
   problem: 'Problem',
@@ -31,11 +31,11 @@ export const CYCLES = {
     template: 'daily.md',
     sections: { done: '오늘 한 일', learnings: '한 줄 배움 / 감정' },
   },
-  weekly: { name: '주간', rank: 1, template: 'period.md', sections: KLPT },
-  monthly: { name: '월간', rank: 2, template: 'period.md', sections: KLPT },
-  quarterly: { name: '분기', rank: 3, template: 'period.md', sections: KLPT },
-  half: { name: '반기', rank: 4, template: 'period.md', sections: KLPT },
-  yearly: { name: '연간', rank: 5, template: 'period.md', sections: KLPT },
+  weekly: { name: '주간', rank: 1, template: 'period.md', sections: PERIOD_SECTIONS },
+  monthly: { name: '월간', rank: 2, template: 'period.md', sections: PERIOD_SECTIONS },
+  quarterly: { name: '분기', rank: 3, template: 'period.md', sections: PERIOD_SECTIONS },
+  half: { name: '반기', rank: 4, template: 'period.md', sections: PERIOD_SECTIONS },
+  yearly: { name: '연간', rank: 5, template: 'period.md', sections: PERIOD_SECTIONS },
 };
 
 export const DAILY = 'daily';

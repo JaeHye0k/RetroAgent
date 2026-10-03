@@ -60,10 +60,6 @@ describe('Transcriber', () => {
     assert.equal(called, false, '키가 없으면 네트워크를 건드리지 않아야 한다');
   });
 
-  test('enabled 는 키 유무를 반영한다', () => {
-    assert.equal(new Transcriber({ apiKey: 'gsk_x' }).enabled, true);
-    assert.equal(new Transcriber({ apiKey: '' }).enabled, false);
-  });
 
   test('비-200 응답을 TranscribeError 로 바꾸고 상세를 담는다', async () => {
     const fetchImpl = async () => ({

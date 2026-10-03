@@ -1,11 +1,24 @@
+import { addDays, periodEndingOn } from './cycles.js';
 import { humanDate } from './schedule.js';
+
+/** 오늘(포함) 이후로 가장 먼저 끝나는 주기. 1년 안에 반드시 하나는 있다. */
+export function nextPeriodAfter(dateString) {
+  for (let ahead = 0; ahead < 400; ahead += 1) {
+    const period = periodEndingOn(addDays(dateString, ahead));
+    if (period) return period;
+  }
+  return null;
+}
 
 const HELP = [
   '🧵 <b>회고 에이전트</b>',
   '',
   '생각날 때마다 그냥 보내세요. 텍스트든 🎙️ 음성 메모든 큐에 쌓아뒀다가 정해진 시각에 노션 일간 회고로 정리해 미리보기를 보냅니다.',
   '',
+  '주기의 마지막 날(일요일·월말·분기말·반기말·연말)에는 그 기간의 회고를 KLPT 로 간추려 보냅니다.',
+  '',
   '<b>/now</b> — 지금까지 쌓인 조각을 바로 정리',
+  '<b>/period</b> — 가장 최근에 끝난 주기 회고를 지금 간추리기',
   '<b>/queue</b> — 큐에 쌓인 조각 보기',
   '<b>/drop 2</b> — 큐에서 2번 조각 빼기',
   '<b>/clear</b> — 큐 전체 비우기 (확인 후)',
@@ -92,6 +105,10 @@ export async function handleCommand(text, { pipeline, config }) {
       await pipeline.confirmClear();
       return true;
 
+    case 'period':
+      await pipeline.runPeriod();
+      return true;
+
     case 'undo':
       await pipeline.undo();
       return true;
@@ -118,6 +135,16 @@ export async function handleCommand(text, { pipeline, config }) {
       }
       const backlog = groups.filter((group) => group.retroDate !== today).length;
       if (backlog) lines.push('', `⚠️ 밀린 날짜 ${backlog}일. /now 를 누르면 가장 오래된 날짜부터 정리합니다.`);
+
+      const next = nextPeriodAfter(today);
+      if (next) {
+        const { hour, minute } = config.periodicTime;
+        lines.push(
+          '',
+          `🧭 다음 주기 회고: ${next.title} — ${next.end} ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`,
+        );
+      }
+
       lines.push('', pending ? '⏳ 승인 대기 중인 정리가 있습니다.' : '✅ 대기 중인 정리 없음');
 
       await pipeline.say(lines.join('\n'));

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test, { describe } from 'node:test';
 import { bullet, headingText } from '../src/blocks.js';
 import { DAILY_SECTIONS } from '../src/cycles.js';
-import { Notion, pageUrl } from '../src/notion.js';
+import { Notion, pageUrl, sectionText } from '../src/notion.js';
 import { loadTemplate, sectionBlocks } from '../src/template.js';
 
 const heading = (id, title) => ({ id, type: 'heading_2', heading_2: { rich_text: [{ plain_text: title }] } });
@@ -317,5 +317,125 @@ describe('pageUrl', () => {
 
   test('url 이 없으면 id 로 만든다', () => {
     assert.equal(pageUrl({ id: 'aa-bb-cc' }), 'https://www.notion.so/aabbcc');
+  });
+});
+
+describe('listPagesInRange — 주기 회고의 재료 모으기', () => {
+  const dbPage = (id, date, cycle, title) => ({
+    id,
+    properties: {
+      이름: { title: [{ plain_text: title }] },
+      날짜: { date: { start: date } },
+      주기: { select: { name: cycle } },
+    },
+  });
+
+  test('기간 양 끝을 포함하는 필터를 만든다', async () => {
+    const fetchImpl = fakeFetch([{ status: 200, body: { results: [], has_more: false } }]);
+    const notion = new Notion({ token: 't', dbId: 'db', fetchImpl });
+
+    await notion.listPagesInRange({ start: '2026-10-01', end: '2026-10-31' });
+
+    const { filter, sorts } = fetchImpl.calls[0].body;
+    assert.deepEqual(filter.and, [
+      { property: '날짜', date: { on_or_after: '2026-10-01' } },
+      { property: '날짜', date: { on_or_before: '2026-10-31' } },
+    ]);
+    assert.deepEqual(sorts, [{ property: '날짜', direction: 'ascending' }]);
+  });
+
+  test('날짜와 주기를 뽑아 돌려준다', async () => {
+    const fetchImpl = fakeFetch([
+      {
+        status: 200,
+        body: {
+          has_more: false,
+          results: [dbPage('a', '2026-10-04', '주간', '2026.09.28 – 10.04 주간 회고')],
+        },
+      },
+    ]);
+    const notion = new Notion({ token: 't', dbId: 'db', fetchImpl });
+
+    const pages = await notion.listPagesInRange({ start: '2026-10-01', end: '2026-10-31' });
+    assert.deepEqual(pages, [
+      {
+        id: 'a',
+        url: 'https://www.notion.so/a',
+        date: '2026-10-04',
+        cycle: 'weekly',
+        title: '2026.09.28 – 10.04 주간 회고',
+      },
+    ]);
+  });
+
+  test('주기를 알 수 없는 페이지는 건너뛴다 — 손으로 만든 것이 섞일 수 있다', async () => {
+    const fetchImpl = fakeFetch([
+      {
+        status: 200,
+        body: {
+          has_more: false,
+          results: [
+            dbPage('a', '2026-10-04', '일간', '일간'),
+            dbPage('b', '2026-10-05', '메모', '내 메모'),
+            { id: 'c', properties: { 날짜: { date: null }, 주기: { select: { name: '일간' } } } },
+          ],
+        },
+      },
+    ]);
+    const notion = new Notion({ token: 't', dbId: 'db', fetchImpl });
+
+    assert.deepEqual((await notion.listPagesInRange({ start: '2026-10-01', end: '2026-10-31' })).map((p) => p.id), ['a']);
+  });
+
+  test('has_more 면 커서를 따라 계속 읽는다', async () => {
+    const fetchImpl = fakeFetch([
+      { status: 200, body: { results: [dbPage('a', '2026-10-01', '일간', 'a')], has_more: true, next_cursor: 'c1' } },
+      { status: 200, body: { results: [dbPage('b', '2026-10-02', '일간', 'b')], has_more: false } },
+    ]);
+    const notion = new Notion({ token: 't', dbId: 'db', fetchImpl });
+
+    const pages = await notion.listPagesInRange({ start: '2026-10-01', end: '2026-10-31' });
+    assert.deepEqual(pages.map((p) => p.id), ['a', 'b']);
+    assert.equal(fetchImpl.calls[1].body.start_cursor, 'c1');
+  });
+});
+
+describe('findPreviousPage — 지난 주기 Try 찾기', () => {
+  test('같은 주기에서 날짜가 앞선 것 하나를 내림차순으로 집는다', async () => {
+    const fetchImpl = fakeFetch([{ status: 200, body: { results: [{ id: 'prev' }] } }]);
+    const notion = new Notion({ token: 't', dbId: 'db', fetchImpl });
+
+    const page = await notion.findPreviousPage('monthly', '2026-10-31');
+
+    assert.equal(page.id, 'prev');
+    const { filter, sorts, page_size: pageSize } = fetchImpl.calls[0].body;
+    assert.deepEqual(filter.and, [
+      { property: '주기', select: { equals: '월간' } },
+      { property: '날짜', date: { before: '2026-10-31' } },
+    ]);
+    assert.deepEqual(sorts, [{ property: '날짜', direction: 'descending' }]);
+    assert.equal(pageSize, 1);
+  });
+
+  test('없으면 null', async () => {
+    const notion = notionWith([{ status: 200, body: { results: [] } }]);
+    assert.equal(await notion.findPreviousPage('weekly', '2026-10-04'), null);
+  });
+});
+
+describe('sectionText — 한 섹션만 잘라내기', () => {
+  const page = '## Keep\n- 좋았던 것\n---\n## Try\n- [ ] 타이머 쓰기\n- [x] 물 마시기\n---\n## Learned\n- 배운 것';
+
+  test('다음 헤딩 직전까지 가져온다', () => {
+    assert.equal(sectionText(page, 'Try'), '- [ ] 타이머 쓰기\n- [x] 물 마시기');
+  });
+
+  test('마지막 섹션은 끝까지', () => {
+    assert.equal(sectionText(page, 'Learned'), '- 배운 것');
+  });
+
+  test('없는 섹션은 빈 문자열', () => {
+    assert.equal(sectionText(page, 'Problem'), '');
+    assert.equal(sectionText('', 'Try'), '');
   });
 });

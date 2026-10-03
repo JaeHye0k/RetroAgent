@@ -1,12 +1,16 @@
 /**
  * 텔레그램·노션 없이 정리 품질만 확인한다. 프롬프트 튜닝은 여기서 반복한다.
  *
- *   node scripts/dry-run.js                 # 내장 샘플로 실행
- *   node scripts/dry-run.js my-notes.txt    # 파일의 각 줄을 조각글로 사용
+ *   npm run dry-run                 # 내장 샘플로 실행
+ *   npm run dry-run my-notes.txt    # 파일의 각 줄을 조각글로 사용
+ *
+ * .env 가 필요하다(설정값에 기본값이 없다). npm run 으로 돌리면 --env-file 이 붙는다.
  */
 import fs from 'node:fs/promises';
 import { doneBlocks, droppedBlocks, learningBlocks } from '../src/blocks.js';
 import { Composer } from '../src/compose.js';
+import { loadConfig } from '../src/config.js';
+import { DAILY_SECTIONS } from '../src/cycles.js';
 import { renderPreview } from '../src/render.js';
 import { retroDateOf } from '../src/schedule.js';
 
@@ -37,16 +41,13 @@ const fragments = texts.map((text, index) => ({
   messageId: index + 1,
 }));
 
-const dateString = retroDateOf(base, Number(process.env.DAY_CUTOFF_HOUR ?? 4));
+const config = loadConfig();
+const dateString = retroDateOf(base, config.cutoffHour);
 
 console.log(`\n조각 ${fragments.length}개를 ${dateString} 회고로 정리합니다. claude 호출 중…\n`);
 const started = Date.now();
 
-const composer = new Composer({
-  bin: process.env.CLAUDE_BIN ?? 'claude',
-  model: process.env.CLAUDE_MODEL ?? 'sonnet',
-  timeoutMs: Number(process.env.COMPOSE_TIMEOUT_MS ?? 240_000),
-});
+const composer = new Composer(config.claude);
 
 const { draft, ok, reason } = await composer.compose({ fragments, dateString });
 
@@ -58,8 +59,8 @@ console.log('\n── 노션에 만들어질 블록 ─────────�
 console.log(
   JSON.stringify(
     {
-      '오늘 한 일': [...doneBlocks(draft.done), ...droppedBlocks(draft.dropped)],
-      '한 줄 배움 / 감정': learningBlocks(draft.learnings),
+      [DAILY_SECTIONS.done]: [...doneBlocks(draft.done), ...droppedBlocks(draft.dropped)],
+      [DAILY_SECTIONS.learnings]: learningBlocks(draft.learnings),
     },
     null,
     2,

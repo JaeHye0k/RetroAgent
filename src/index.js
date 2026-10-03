@@ -41,7 +41,7 @@ async function main() {
   console.log(`[retro-agent] @${me.username} 로 시작합니다. 정리 시각 ${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')} (${process.env.TZ ?? '시스템 기본'})`);
 
   const scheduler = setInterval(() => {
-    pipeline.maybeRunDigest().catch((error) => console.error('[scheduler] 실패:', error));
+    pipeline.tick().catch((error) => console.error("[scheduler] 실패:", error));
   }, SCHEDULER_INTERVAL_MS);
 
   let stopping = false;
@@ -134,16 +134,7 @@ async function enqueueFragment(message, text, { pipeline, telegram, config }) {
  */
 async function handleVoice(message, { config, telegram, pipeline, transcriber }) {
   const chatId = config.telegram.chatId;
-
-  if (!transcriber.enabled) {
-    await telegram.sendMessage(
-      chatId,
-      '🎙️ 음성 인식이 설정되지 않았습니다. .env 에 GROQ_API_KEY 를 넣어주세요.',
-      { reply_to_message_id: message.message_id },
-    );
-    return;
-  }
-
+  // GROQ_API_KEY 는 필수 설정이다. 키가 없으면 여기까지 오기 전에 시작이 막힌다.
   const { voice } = message;
   try {
     // 받아서 처리 중이라는 신호. 인식은 몇 초 걸릴 수 있다.

@@ -100,11 +100,36 @@ export function doneBlocks(groups = []) {
   return blocks;
 }
 
-/** draft.learnings → 블록 */
-export function learningBlocks(items = []) {
+/** `{ text, sub }` 목록 → 불릿 블록. learnings·Keep·Problem·Learned 가 모두 이 모양이다. */
+export function bulletBlocks(items = []) {
   return items
     .filter((item) => String(item?.text ?? '').trim())
     .map((item) => bullet(item.text.trim(), item.sub ?? []));
+}
+
+/** draft.learnings → 블록 */
+export const learningBlocks = bulletBlocks;
+
+/** 주기 회고의 Try → 체크박스. 기간 중 체크해 두면 다음 주기가 그 상태를 읽는다. */
+export function tryBlocks(items = []) {
+  return items
+    .filter((item) => String(item?.text ?? '').trim())
+    .map((item) => todo(item.text.trim(), { sub: item.sub ?? [] }));
+}
+
+/**
+ * '지난 주기 Try 점검' → 체크박스.
+ * 실행 여부는 체크 상태로, 그렇게 판단한 근거는 부연으로 내린다.
+ */
+export function tryReviewBlocks(items = []) {
+  return items
+    .filter((item) => String(item?.text ?? '').trim())
+    .map((item) =>
+      todo(item.text.trim(), {
+        checked: Boolean(item.done),
+        sub: String(item.note ?? '').trim() ? [item.note.trim()] : [],
+      }),
+    );
 }
 
 /** draft.dropped → 블록. 분류에 실패해도 원문은 반드시 페이지에 남긴다. */
