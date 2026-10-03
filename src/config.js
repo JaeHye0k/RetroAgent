@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const DATA_DIR = path.join(ROOT, 'data');
 export const PROMPTS_DIR = path.join(ROOT, 'prompts');
+export const TEMPLATES_DIR = path.join(ROOT, 'templates');
 
 export class ConfigError extends Error {
   constructor(message) {

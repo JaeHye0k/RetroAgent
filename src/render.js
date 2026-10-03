@@ -1,4 +1,4 @@
-import { SECTIONS } from './blocks.js';
+import { DAILY_SECTIONS } from './cycles.js';
 import { humanDate } from './schedule.js';
 
 /** 텔레그램 메시지 1건 최대 길이 */
@@ -47,7 +47,7 @@ export function renderPreview(draft, { fragmentCount, note } = {}) {
 
   const doneGroups = (draft.done ?? []).filter((g) => (g?.bullets ?? []).length);
   if (doneGroups.length) {
-    lines.push('', `━━ <b>${escapeHtml(SECTIONS.done.title)}</b>`);
+    lines.push('', `━━ <b>${escapeHtml(DAILY_SECTIONS.done)}</b>`);
     for (const group of doneGroups) {
       if (String(group.group ?? '').trim()) lines.push(`▸ <b>${escapeHtml(group.group.trim())}</b>`);
       for (const item of group.bullets) {
@@ -59,7 +59,7 @@ export function renderPreview(draft, { fragmentCount, note } = {}) {
 
   const learnings = (draft.learnings ?? []).filter((l) => String(l?.text ?? '').trim());
   if (learnings.length) {
-    lines.push('', `━━ <b>${escapeHtml(SECTIONS.learnings.title)}</b>`);
+    lines.push('', `━━ <b>${escapeHtml(DAILY_SECTIONS.learnings)}</b>`);
     for (const item of learnings) {
       lines.push(`  • ${escapeHtml(item.text)}`);
       for (const sub of item.sub ?? []) lines.push(`      ↳ ${escapeHtml(sub)}`);
@@ -68,7 +68,7 @@ export function renderPreview(draft, { fragmentCount, note } = {}) {
 
   const dropped = (draft.dropped ?? []).filter((d) => String(d ?? '').trim());
   if (dropped.length) {
-    lines.push('', `⚠️ <b>분류 못 한 ${dropped.length}건</b> — '${escapeHtml(SECTIONS.done.title)}' 아래 원문 그대로 넣습니다`);
+    lines.push('', `⚠️ <b>분류 못 한 ${dropped.length}건</b> — '${escapeHtml(DAILY_SECTIONS.done)}' 아래 원문 그대로 넣습니다`);
     for (const text of dropped) lines.push(`  • ${escapeHtml(text)}`);
   }
 

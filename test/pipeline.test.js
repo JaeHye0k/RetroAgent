@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test, { afterEach, beforeEach, describe } from 'node:test';
-import { SECTIONS } from '../src/blocks.js';
+import { DAILY_SECTIONS } from '../src/cycles.js';
 import { Pipeline } from '../src/pipeline.js';
 import { Queue } from '../src/queue.js';
 
@@ -193,7 +193,7 @@ describe('save', () => {
 
     await pipeline.handleCallback(callback(`save:${token}`));
 
-    assert.deepEqual(notion.appendedSections, [SECTIONS.done.title, SECTIONS.learnings.title]);
+    assert.deepEqual(notion.appendedSections, [DAILY_SECTIONS.done, DAILY_SECTIONS.learnings]);
     assert.equal(await queue.size(), 0);
     assert.equal(await pipeline.pending.read(), null);
 
@@ -220,7 +220,7 @@ describe('save', () => {
   });
 
   test('저장이 실패하면 큐와 pending 을 그대로 두고 재시도 버튼을 준다', async () => {
-    const pipeline = makePipeline({ notionImpl: new FakeNotion({ failOnSection: SECTIONS.done.title }) });
+    const pipeline = makePipeline({ notionImpl: new FakeNotion({ failOnSection: DAILY_SECTIONS.done }) });
     await queue.append(fragment(1));
     await pipeline.runDigest({ trigger: 'manual' });
     const { token } = await pipeline.pending.read();
@@ -234,14 +234,14 @@ describe('save', () => {
   });
 
   test('두 번째 섹션에서 실패한 뒤 재시도하면 첫 섹션을 중복 삽입하지 않는다', async () => {
-    const flaky = new FakeNotion({ failOnSection: SECTIONS.learnings.title });
+    const flaky = new FakeNotion({ failOnSection: DAILY_SECTIONS.learnings });
     const pipeline = makePipeline({ notionImpl: flaky });
     await queue.append(fragment(1));
     await pipeline.runDigest({ trigger: 'manual' });
     const { token } = await pipeline.pending.read();
 
     await pipeline.handleCallback(callback(`save:${token}`));
-    assert.deepEqual(flaky.appendedSections, [SECTIONS.done.title, SECTIONS.learnings.title]);
+    assert.deepEqual(flaky.appendedSections, [DAILY_SECTIONS.done, DAILY_SECTIONS.learnings]);
 
     const afterFailure = await pipeline.pending.read();
     assert.equal(afterFailure.progress.done, true);
@@ -251,7 +251,7 @@ describe('save', () => {
     flaky.failOnSection = null;
     await pipeline.handleCallback(callback(`save:${token}`));
 
-    const doneAppends = flaky.appendedSections.filter((t) => t === SECTIONS.done.title);
+    const doneAppends = flaky.appendedSections.filter((t) => t === DAILY_SECTIONS.done);
     assert.equal(doneAppends.length, 1, '오늘 한 일 섹션은 한 번만 삽입돼야 한다');
     assert.equal(await queue.size(), 0);
     assert.equal(await pipeline.pending.read(), null);
@@ -273,7 +273,7 @@ describe('cancel / raw / 만료', () => {
   });
 
   test('부분 저장 후 취소하면 이미 들어간 블록을 알려준다', async () => {
-    const pipeline = makePipeline({ notionImpl: new FakeNotion({ failOnSection: SECTIONS.learnings.title }) });
+    const pipeline = makePipeline({ notionImpl: new FakeNotion({ failOnSection: DAILY_SECTIONS.learnings }) });
     await queue.append(fragment(1));
     await pipeline.runDigest({ trigger: 'manual' });
     const { token } = await pipeline.pending.read();

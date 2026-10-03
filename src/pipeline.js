@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
-import { doneBlocks, droppedBlocks, learningBlocks, SECTIONS } from './blocks.js';
+import { doneBlocks, droppedBlocks, learningBlocks } from './blocks.js';
+import { DAILY_SECTIONS } from './cycles.js';
 import { pageUrl } from './notion.js';
 import {
   clearKeyboard,
@@ -223,8 +224,8 @@ export class Pipeline {
       // 첫 번째 섹션이 다시 삽입되면 페이지에 같은 내용이 두 번 들어간다.
       const progress = pending.progress ?? { blockIds: [], done: false, learnings: false };
       const steps = [
-        { key: 'done', title: SECTIONS.done.title, blocks: [...doneBlocks(draft.done), ...droppedBlocks(draft.dropped)] },
-        { key: 'learnings', title: SECTIONS.learnings.title, blocks: learningBlocks(draft.learnings) },
+        { key: 'done', title: DAILY_SECTIONS.done, blocks: [...doneBlocks(draft.done), ...droppedBlocks(draft.dropped)] },
+        { key: 'learnings', title: DAILY_SECTIONS.learnings, blocks: learningBlocks(draft.learnings) },
       ];
 
       for (const step of steps) {

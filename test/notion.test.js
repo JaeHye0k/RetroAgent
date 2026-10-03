@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test, { describe } from 'node:test';
-import { bullet, SECTIONS } from '../src/blocks.js';
+import { bullet, headingText } from '../src/blocks.js';
+import { DAILY_SECTIONS } from '../src/cycles.js';
 import { Notion, pageUrl } from '../src/notion.js';
+import { loadTemplate, sectionBlocks } from '../src/template.js';
 
 const heading = (id, title) => ({ id, type: 'heading_2', heading_2: { rich_text: [{ plain_text: title }] } });
 const quote = (id, text) => ({ id, type: 'quote', quote: { rich_text: [{ plain_text: text }] } });
@@ -41,11 +43,11 @@ const notionWith = (responses) =>
 describe('appendToSection — 섹션 끝에 정확히 끼워넣는다', () => {
   test('구분선 직전 마지막 블록을 기준점으로 삼는다', async () => {
     const children = [
-      heading('h1', SECTIONS.done.title),
+      heading('h1', DAILY_SECTIONS.done),
       quote('q1', '가이드'),
       listItem('b1', '기존 항목'),
       dividerBlock('d1'),
-      heading('h2', SECTIONS.learnings.title),
+      heading('h2', DAILY_SECTIONS.learnings),
       quote('q2', '가이드'),
     ];
     const fetchImpl = fakeFetch([
@@ -54,7 +56,7 @@ describe('appendToSection — 섹션 끝에 정확히 끼워넣는다', () => {
     ]);
     const notion = new Notion({ token: 't', dbId: 'db', fetchImpl });
 
-    const ids = await notion.appendToSection('page', SECTIONS.done.title, [bullet('새 항목')]);
+    const ids = await notion.appendToSection('page', DAILY_SECTIONS.done, [bullet('새 항목')]);
 
     assert.deepEqual(ids, ['new1']);
     const patch = fetchImpl.calls.at(-1);
@@ -64,10 +66,10 @@ describe('appendToSection — 섹션 끝에 정확히 끼워넣는다', () => {
 
   test('섹션이 비어 있으면 가이드 문구 뒤에 붙는다', async () => {
     const children = [
-      heading('h1', SECTIONS.done.title),
+      heading('h1', DAILY_SECTIONS.done),
       quote('q1', '가이드'),
       dividerBlock('d1'),
-      heading('h2', SECTIONS.learnings.title),
+      heading('h2', DAILY_SECTIONS.learnings),
       quote('q2', '가이드'),
     ];
     const fetchImpl = fakeFetch([
@@ -76,15 +78,15 @@ describe('appendToSection — 섹션 끝에 정확히 끼워넣는다', () => {
     ]);
     const notion = new Notion({ token: 't', dbId: 'db', fetchImpl });
 
-    await notion.appendToSection('page', SECTIONS.done.title, [bullet('새 항목')]);
+    await notion.appendToSection('page', DAILY_SECTIONS.done, [bullet('새 항목')]);
     assert.equal(fetchImpl.calls.at(-1).body.after, 'q1');
   });
 
   test('구분선이 없어도 다음 헤딩 직전에서 멈춘다', async () => {
     const children = [
-      heading('h1', SECTIONS.done.title),
+      heading('h1', DAILY_SECTIONS.done),
       listItem('b1', '기존'),
-      heading('h2', SECTIONS.learnings.title),
+      heading('h2', DAILY_SECTIONS.learnings),
       listItem('b2', '배움'),
     ];
     const fetchImpl = fakeFetch([
@@ -93,15 +95,15 @@ describe('appendToSection — 섹션 끝에 정확히 끼워넣는다', () => {
     ]);
     const notion = new Notion({ token: 't', dbId: 'db', fetchImpl });
 
-    await notion.appendToSection('page', SECTIONS.done.title, [bullet('새 항목')]);
+    await notion.appendToSection('page', DAILY_SECTIONS.done, [bullet('새 항목')]);
     assert.equal(fetchImpl.calls.at(-1).body.after, 'b1');
   });
 
   test('마지막 섹션이면 페이지 맨 끝 블록을 기준점으로 삼는다', async () => {
     const children = [
-      heading('h1', SECTIONS.done.title),
+      heading('h1', DAILY_SECTIONS.done),
       dividerBlock('d1'),
-      heading('h2', SECTIONS.learnings.title),
+      heading('h2', DAILY_SECTIONS.learnings),
       listItem('b2', '기존 배움'),
     ];
     const fetchImpl = fakeFetch([
@@ -110,7 +112,7 @@ describe('appendToSection — 섹션 끝에 정확히 끼워넣는다', () => {
     ]);
     const notion = new Notion({ token: 't', dbId: 'db', fetchImpl });
 
-    await notion.appendToSection('page', SECTIONS.learnings.title, [bullet('새 배움')]);
+    await notion.appendToSection('page', DAILY_SECTIONS.learnings, [bullet('새 배움')]);
     assert.equal(fetchImpl.calls.at(-1).body.after, 'b2');
   });
 
@@ -121,19 +123,21 @@ describe('appendToSection — 섹션 끝에 정확히 끼워넣는다', () => {
     ]);
     const notion = new Notion({ token: 't', dbId: 'db', fetchImpl });
 
-    await notion.appendToSection('page', SECTIONS.learnings.title, [bullet('새 배움')]);
+    await notion.appendToSection('page', DAILY_SECTIONS.learnings, [bullet('새 배움')]);
 
     const patch = fetchImpl.calls.at(-1);
     assert.equal(patch.body.after, undefined, '기준점 없이 페이지 끝에 붙는다');
     assert.deepEqual(patch.body.children.map((b) => b.type), ['heading_2', 'quote', 'bulleted_list_item']);
-    // 해당 섹션의 가이드 문구만 들어가야 한다.
-    assert.equal(patch.body.children[1].quote.rich_text[0].text.content, SECTIONS.learnings.guide);
+    // 해당 섹션의 가이드 문구만 들어가야 한다. 문구는 템플릿이 쥐고 있다.
+    const template = await loadTemplate('daily');
+    const expected = sectionBlocks(template, DAILY_SECTIONS.learnings);
+    assert.deepEqual(patch.body.children.slice(0, 2), expected);
   });
 
   test('빈 블록 배열이면 API 를 아예 부르지 않는다', async () => {
     const fetchImpl = fakeFetch([]);
     const notion = new Notion({ token: 't', dbId: 'db', fetchImpl });
-    assert.deepEqual(await notion.appendToSection('page', SECTIONS.done.title, []), []);
+    assert.deepEqual(await notion.appendToSection('page', DAILY_SECTIONS.done, []), []);
     assert.equal(fetchImpl.calls.length, 0);
   });
 });
@@ -251,18 +255,37 @@ describe('findDailyPage', () => {
   });
 });
 
-describe('createDailyPage', () => {
-  test('제목·날짜·주기와 뼈대를 함께 만든다', async () => {
+describe('createPage', () => {
+  const createWith = async (...args) => {
     const fetchImpl = fakeFetch([{ status: 200, body: { id: 'new-page' } }]);
     const notion = new Notion({ token: 't', dbId: 'db', fetchImpl });
+    await notion.createPage(...args);
+    return fetchImpl.calls[0].body;
+  };
 
-    await notion.createDailyPage('2026-07-26');
-    const body = fetchImpl.calls[0].body;
+  test('일간 — 제목·날짜·주기와 뼈대를 함께 만든다', async () => {
+    const body = await createWith('2026-07-26');
 
     assert.equal(body.properties['이름'].title[0].text.content, '2026.07.26 일간 회고');
     assert.deepEqual(body.properties['날짜'].date, { start: '2026-07-26' });
     assert.deepEqual(body.properties['주기'].select, { name: '일간' });
     assert.deepEqual(body.children.map((b) => b.type), ['heading_2', 'quote', 'divider', 'heading_2', 'quote']);
+  });
+
+  test('주간 — 제목에 기간이 들어가고 날짜는 마지막 날이다', async () => {
+    const body = await createWith('2026-10-04', 'weekly');
+
+    assert.equal(body.properties['이름'].title[0].text.content, '2026.09.28 – 10.04 주간 회고');
+    assert.deepEqual(body.properties['날짜'].date, { start: '2026-10-04' }, '기간의 끝 하나만 넣는다');
+    assert.deepEqual(body.properties['주기'].select, { name: '주간' });
+  });
+
+  test('주기 회고는 KLPT 뼈대로 만들어진다', async () => {
+    const body = await createWith('2026-12-31', 'yearly');
+
+    assert.equal(body.properties['주기'].select.name, '연간');
+    const headings = body.children.filter((b) => b.type === 'heading_2').map(headingText);
+    assert.deepEqual(headings, ['그라운드 룰', '지난 주기 Try 점검', 'Keep', 'Problem', 'Learned', 'Try']);
   });
 });
 
